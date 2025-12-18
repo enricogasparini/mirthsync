@@ -1,0 +1,46 @@
+{
+  "name": "@saga-it/mirthsync",
+  "version": "3.5.1",
+  "description": "DevOps tool for Mirth Connect and Open Integration Engine version control and CI/CD automation",
+  "keywords": [
+    "mirth",
+    "mirth-connect",
+    "open-integration-engine",
+    "oie",
+    "healthcare",
+    "hl7",
+    "fhir",
+    "dicom",
+    "devops",
+    "ci-cd",
+    "version-control",
+    "integration-engine"
+  ],
+  "homepage": "https://github.com/SagaHealthcareIT/mirthsync",
+  "bugs": {
+    "url": "https://github.com/SagaHealthcareIT/mirthsync/issues"
+  },
+  "license": "EPL-1.0",
+  "author": "Saga IT LLC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SagaHealthcareIT/mirthsync.git"
+  },
+  "bin": {
+    "mirthsync": "./bin/mirthsync.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "preferGlobal": true
+}
