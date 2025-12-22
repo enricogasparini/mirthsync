@@ -16,7 +16,7 @@
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :min-lein-version "2.9.1"
-  :signing {:gpg-key "jessedowell@gmail.com"}
+  :signing {:gpg-key "jesse.dowell@gmail.com"}
   :repositories ^:replace [["central" {:url "https://repo1.maven.org/maven2/" :snapshots false :checksum :ignore}]
                            ["clojars" {:url "https://repo.clojars.org/"}]]
   :deploy-repositories [["releases" {:url "https://repo.clojars.org" :creds :gpg}]
