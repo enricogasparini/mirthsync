@@ -64,14 +64,14 @@
      (comp (filter #(let [matches (.startsWith (.toString ^File %) required-prefix)]
                     (if matches
                       (do (when (seq restrict-to-path)
-                            (log/infof "Found a match: %s" %))
+                            (log/debugf "Found a match: %s" %))
                           true)
-                      (do (log/infof "filtering push of '%s' since it does not start with our required prefix: %s" % required-prefix)
+                      (do (log/debugf "filtering push of '%s' since it does not start with our required prefix: %s" % required-prefix)
                           false))))
           (map #(expand-filerefs %
                                 (mxml/to-zip
                                  (do
-                                   (log/infof "\tFile: %s" (.toString ^File %))
+                                   (log/debugf "\tFile: %s" (.toString ^File %))
                                    (slurp %)))))
           (filter #(not (mi/should-skip? api % app-conf))))
      (mi/api-files api (mi/local-path api (:target app-conf))))))

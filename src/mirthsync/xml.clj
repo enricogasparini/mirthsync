@@ -45,7 +45,7 @@
           (if (.startsWith ^String fpath required-prefix)
             (do
               (when (seq restrict-to-path)
-                (log/infof "Found a match: %s" fpath))
+                (log/debugf "Found a match: %s" fpath))
 
               ;; never overwrite unless force is specified or we're updating
               ;; index files in disk mode 1
@@ -57,9 +57,9 @@
                                "force (-f) option was not specified. Refusing "
                                "to overwrite the file."))
                 (do (io/make-parents fpath)
-                    (log/infof "\tFile: %s" fpath)
+                    (log/debugf "\tFile: %s" fpath)
                     (spit fpath xml-str))))
             ;; else
-            (log/infof "Filtering pull of '%s' since it does not start with our required prefix: %s" fpath required-prefix)))
+            (log/debugf "Filtering pull of '%s' since it does not start with our required prefix: %s" fpath required-prefix)))
         (recur (rest files-data) (second files-data)))))
   app-conf)

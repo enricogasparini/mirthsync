@@ -54,7 +54,7 @@
   (if (and skip-disabled
            (not (enabled? api el-loc)))
     (do
-      (log/infof "Filtering '%s' because it is disabled and --skip-disabled is set" (find-name api el-loc))
+      (log/debugf "Filtering '%s' because it is disabled and --skip-disabled is set" (find-name api el-loc))
       true)
     (do
       (log/debugf "Not filtering '%s'. Skip-disabled is '%b'." (find-name api el-loc) skip-disabled)
