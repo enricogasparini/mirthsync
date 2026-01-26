@@ -39,7 +39,7 @@ We extend our sincere gratitude to the maintainers and contributors of the [Open
 
 ## Current version
 
-The latest version of mirthSync is "3.5.1". Note the changes below. Version 3 of
+The latest version of mirthSync is "3.5.2". Note the changes below. Version 3 of
 mirthSync changed the layout of the target directory structure. Javascript is
 extracted into separate files and top level channels are now placed in a default
 group directory.
@@ -56,8 +56,9 @@ group directory.
 
 ## Changes
 
-### 3.5.1-SNAPSHOT
+### 3.5.2
 
+- **Reduced Log Noise**: Filtering messages (for `--restrict-to-path` and `--skip-disabled`) now log at DEBUG level instead of INFO, making normal operations quieter. Use `-v` flag to see filtering details.
 - **Token-based Authentication**: New `--token` flag for authentication using existing HTTP session tokens
   - Alternative to username/password authentication
   - Useful for automation and CI/CD pipelines with pre-authenticated sessions
@@ -69,7 +70,6 @@ group directory.
   - Deploys all channels in a single operation instead of one-by-one
   - Significantly faster when pushing multiple channels
   - Allows Mirth's dependency logic to control deployment order
-- **⚠️ SNAPSHOT Release**: This version contains new features that are still being tested. Use with caution in production environments.
 
 ### 3.3.0-SNAPSHOT
 
