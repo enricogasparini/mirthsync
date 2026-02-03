@@ -2,6 +2,15 @@
 
 ![](https://github.com/SagaHealthcareIT/mirthsync/workflows/Clojure%20CI/badge.svg)
 
+## VS Code Extension
+
+A companion VS Code extension is available for a graphical interface to mirthSync operations.
+See [VS Code Extension Documentation](docs/vscode-extension/README.md) for details.
+
+Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=SagaITLLC.mirthsync).
+
+---
+
 mirthSync is an open source DevOps tool for Mirth Connect and Open Integration Engine (OIE) version control
 and CI/CD automation. This command line tool enables healthcare integration DevOps workflows by synchronizing
 code between servers - allowing you to push or pull channels, code templates, configuration maps, and global
