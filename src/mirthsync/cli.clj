@@ -78,6 +78,12 @@
         disabled channels should be pushed or pulled. Default: false"
     :default false]
 
+   [nil "--channel-id CHANNEL_ID" "Filter operations to only affect the channel with this specific ID"
+    :default nil
+    :validate [#(or (nil? %)
+                    (re-matches #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" %))
+               "Channel ID must be a valid UUID format (e.g., 1b82a0e4-f80c-44b7-8147-43e1f1239fb6)"]]
+
    ["-d" "--deploy" "Deploy channels on push
         During a push, deploy each included channel immediately
         after saving the channel to Mirth."]

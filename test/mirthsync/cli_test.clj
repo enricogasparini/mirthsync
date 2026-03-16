@@ -32,6 +32,7 @@
                 :disk-mode "code",
                 :action "push",
                 :skip-disabled false,
+                :channel-id nil,
                 :target "./tmp",
                 :restrict-to-path "",
                 :exit-msg nil,
@@ -56,6 +57,7 @@
                 :disk-mode "code",
                 :action "pull",
                 :skip-disabled false,
+                :channel-id nil,
                 :target "foo",
                 :restrict-to-path "",
                 :exit-msg nil,
@@ -129,6 +131,38 @@
     (let [conf-no-server (config ["-u" "admin" "-p" "password" "-t" "foo" "pull"])]
       (is (= 1 (:exit-code conf-no-server)))
       (is (seq (:exit-msg conf-no-server)))
-      (is (re-find #"--server is required" (:exit-msg conf-no-server))))))
+      (is (re-find #"--server is required" (:exit-msg conf-no-server)))))
+
+  (testing "Valid UUID format is accepted for channel-id"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
+                         "--channel-id" "1b82a0e4-f80c-44b7-8147-43e1f1239fb6" "pull"])]
+      (is (= 0 (:exit-code conf)))
+      (is (= "1b82a0e4-f80c-44b7-8147-43e1f1239fb6" (:channel-id conf)))))
+
+  (testing "Uppercase UUID format is accepted for channel-id"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
+                         "--channel-id" "1B82A0E4-F80C-44B7-8147-43E1F1239FB6" "pull"])]
+      (is (= 0 (:exit-code conf)))
+      (is (= "1B82A0E4-F80C-44B7-8147-43E1F1239FB6" (:channel-id conf)))))
+
+  (testing "No channel-id flag defaults to nil"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "pull"])]
+      (is (= 0 (:exit-code conf)))
+      (is (nil? (:channel-id conf)))))
+
+  (testing "Invalid UUID format is rejected for channel-id"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
+                         "--channel-id" "not-a-valid-uuid" "pull"])]
+      (is (= 1 (:exit-code conf)))))
+
+  (testing "Partial UUID is rejected for channel-id"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
+                         "--channel-id" "1b82a0e4-f80c-44b7" "pull"])]
+      (is (= 1 (:exit-code conf)))))
+
+  (testing "UUID without hyphens is rejected for channel-id"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
+                         "--channel-id" "1b82a0e4f80c44b7814743e1f1239fb6" "pull"])]
+      (is (= 1 (:exit-code conf))))))
 
 

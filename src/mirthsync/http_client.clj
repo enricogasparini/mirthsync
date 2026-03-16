@@ -1,6 +1,7 @@
 (ns mirthsync.http-client
   (:require [clj-http.client :as client]
             [clojure.data.xml :as xml]
+            [clojure.data.zip.xml :as cdzx]
             [mirthsync.logging :as log]
             [clojure.zip :as zip]
             [mirthsync.interfaces :as mi]
@@ -101,3 +102,38 @@
       :body
       mxml/to-zip
       find-elements))
+
+(defn fetch-channel-by-id
+  "Fetch a specific channel by its ID from the remote server."
+  [{:keys [server ignore-cert-warnings]} channel-id]
+  (log/logf :debug "Fetching channel with ID: %s" channel-id)
+  (try
+    (let [response (client/get (str server "/channels/" channel-id)
+                               {:headers (build-headers)
+                                :insecure? ignore-cert-warnings
+                                :throw-exceptions false})
+          status (:status response)
+          channel-xml (:body response)]
+      (cond
+        (or (= status 404) (= status 204))
+        (throw (ex-info (str "Channel with ID '" channel-id "' not found on server")
+                        {:type :channel-not-found :channel-id channel-id :status status}))
+
+        (not= status 200)
+        (throw (ex-info (str "Failed to fetch channel with ID '" channel-id "'. Server returned status: " status)
+                        {:type :channel-fetch-error :channel-id channel-id :status status :body channel-xml}))
+
+        (or (nil? channel-xml) (empty? channel-xml))
+        (throw (ex-info (str "Channel with ID '" channel-id "' returned empty response")
+                        {:type :channel-empty :channel-id channel-id}))
+
+        :else
+        ;; Wrap the single channel in a list element and return as a list of locs
+        [(-> (str "<list>" channel-xml "</list>")
+             mxml/to-zip
+             (cdzx/xml1-> :list :channel))]))
+    (catch clojure.lang.ExceptionInfo e
+      (throw e))
+    (catch Exception e
+      (throw (ex-info (str "Error fetching channel with ID '" channel-id "': " (.getMessage e))
+                      {:type :channel-fetch-error :channel-id channel-id :cause e})))))
