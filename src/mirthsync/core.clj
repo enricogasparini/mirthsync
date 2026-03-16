@@ -70,6 +70,21 @@
         conf (if-not (seq (:exit-msg conf))
                (try
                  (run conf)
+                 (catch clojure.lang.ExceptionInfo e
+                   (let [data (ex-data e)
+                         error-type (:type data)]
+                     (case error-type
+                       (:channel-not-found :channel-fetch-error :channel-empty)
+                       (-> conf
+                           (assoc :exit-code 1)
+                           (assoc :exit-msg (str "ERROR: " (.getMessage e))))
+
+                       ;; Default for other ExceptionInfo
+                       (do
+                         (.printStackTrace e)
+                         (-> conf
+                             (assoc :exit-code 1)
+                             (assoc :exit-msg (.getMessage e)))))))
                  (catch Exception e
                    (.printStackTrace e)
                    (-> conf

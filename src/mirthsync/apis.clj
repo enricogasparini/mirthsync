@@ -154,22 +154,25 @@
            action)
     app-conf))
 
-(defn apis [{:keys [disk-mode include-configuration-map] :as app-conf}]
-  (filter #(cond
-             (and (= :server-configuration %) (not= "backup" disk-mode)) false  ; exclude server-configuration when NOT in backup mode
-             (and (not= :server-configuration %) (= "backup" disk-mode)) false  ; exclude everything EXCEPT server-configuration when in backup mode
-             (and (= :configuration-map %) (not include-configuration-map)) false  ; exclude configuration-map when include-configuration-map is false
-             :else true)
+(defn apis [{:keys [disk-mode include-configuration-map channel-id] :as app-conf}]
+  ;; If channel-id is specified, we need channel-groups for preprocessing then channels
+  (if channel-id
+    [:channel-groups :channels]
+    (filter #(cond
+               (and (= :server-configuration %) (not= "backup" disk-mode)) false  ; exclude server-configuration when NOT in backup mode
+               (and (not= :server-configuration %) (= "backup" disk-mode)) false  ; exclude everything EXCEPT server-configuration when in backup mode
+               (and (= :configuration-map %) (not include-configuration-map)) false  ; exclude configuration-map when include-configuration-map is false
+               :else true)
 
-          [:server-configuration
-           :configuration-map
-           :global-scripts
-           :resources
-           :code-template-libraries
-           :code-templates
-           :channel-groups
-           :channels
-           :alerts]))
+            [:server-configuration
+             :configuration-map
+             :global-scripts
+             :resources
+             :code-template-libraries
+             :code-templates
+             :channel-groups
+             :channels
+             :alerts])))
 
 (defmethod mi/find-name :default [_ api-loc] (api-element-name api-loc))
 (defmethod mi/find-name :configuration-map [_ _] nil)

@@ -55,7 +55,7 @@
 
 (defn- local-locs
   "Lazy sequence of local el-locs for the current api."
-  [{:keys [api restrict-to-path target] :as app-conf}]
+  [{:keys [api restrict-to-path target channel-id] :as app-conf}]
 
   (let [^String required-prefix (str target File/separator restrict-to-path)]
     (log/debugf "required-prefix: %s" required-prefix)
@@ -73,14 +73,36 @@
                                  (do
                                    (log/debugf "\tFile: %s" (.toString ^File %))
                                    (slurp %)))))
+          ;; Filter by channel ID if specified
+          (filter #(if (and channel-id (= api :channels))
+                     (let [id (mi/find-id api %)]
+                       (if (= id channel-id)
+                         (do (log/infof "Channel ID match: %s" id) true)
+                         (do (log/debugf "Filtering out channel with ID: %s (looking for %s)" id channel-id) false)))
+                     true))
           (filter #(not (mi/should-skip? api % app-conf))))
      (mi/api-files api (mi/local-path api (:target app-conf))))))
 
 (defn- remote-locs
   "Seq of remote el-locs for the current api. Could be lazy or not
   depending on the implementation of find-elements."
-  [{:keys [api] :as app-conf}]
-  (mhttp/fetch-all app-conf (partial mi/find-elements api)))
+  [{:keys [api channel-id] :as app-conf}]
+  (cond
+    ;; When channel-id is specified and we're processing channels
+    (and channel-id (= api :channels))
+    (do
+      (log/infof "Fetching channel with ID: %s" channel-id)
+      (mhttp/fetch-channel-by-id app-conf channel-id))
+
+    ;; When channel-id is specified and we're processing channel-groups (for preprocessing only)
+    (and channel-id (= api :channel-groups))
+    (do
+      (log/infof "Fetching channel groups for preprocessing")
+      (mhttp/fetch-all app-conf (partial mi/find-elements api)))
+
+    ;; Original behavior - fetch all
+    :else
+    (mhttp/fetch-all app-conf (partial mi/find-elements api))))
 
 (defn-  process-nodes
   "Prints the message and processes the el-locs via the action."
@@ -104,12 +126,25 @@
   "Serializes all xml found at the api rest-path to the filesystem using the
   supplied config. Returns a (potentially) updated app-conf with
   details about the fetched apis."
-  [{:keys [api] :as app-conf}]
-  (process-nodes
-   app-conf
-   (str "Downloading from " (mhttp/api-url app-conf) " to " (mi/local-path api (:target app-conf)))
-   (remote-locs app-conf)
-   mxml/serialize-node))
+  [{:keys [api channel-id] :as app-conf}]
+  ;; When channel-id is specified and we're processing channel-groups,
+  ;; we only want to preprocess (not write files)
+  (if (and channel-id (= api :channel-groups))
+    ;; Just fetch and preprocess for server-groups data, don't write files
+    (let [groups-locs (remote-locs app-conf)]
+      (log/info "Preprocessing channel groups for channel ID lookup")
+      (loop [app-conf app-conf
+             group-locs groups-locs]
+        (if-let [group-loc (first group-locs)]
+          (recur (mi/pre-node-action api (assoc app-conf :el-loc (cz/xml-zip (cz/node group-loc))))
+                 (rest group-locs))
+          app-conf)))
+    ;; Normal download behavior
+    (process-nodes
+     app-conf
+     (str "Downloading from " (mhttp/api-url app-conf) " to " (mi/local-path api (:target app-conf)))
+     (remote-locs app-conf)
+     mxml/serialize-node)))
 
 (defn upload
   "Takes the current app-conf with the current api and finds associated

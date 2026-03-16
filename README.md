@@ -52,6 +52,7 @@ extracted into separate files and top level channels are now placed in a default
 group directory.
 
 **Recent Improvements:**
+- **Channel ID Filtering**: New `--channel-id` flag to scope push/pull operations to a single channel by UUID
 - **Token-based Authentication**: New `--token` flag for authentication using existing HTTP session tokens (alternative to username/password)
 - **Simplified Git Operations**: Git commands no longer require server credentials or authentication flags
 - **Bulk Channel Deployment**: New `--deploy-all` flag for efficient bulk deployment of multiple channels
@@ -62,6 +63,15 @@ group directory.
 - **Security**: Path validation and safety features for file operations
 
 ## Changes
+
+### 3.6.0
+
+- **Channel ID Filtering**: New `--channel-id` flag to scope push/pull operations to a single channel
+  - Accepts a valid UUID (e.g., `1b82a0e4-f80c-44b7-8147-43e1f1239fb6`)
+  - Fetches only the specified channel from the server instead of all channels
+  - Automatically includes channel-groups preprocessing for correct group/path resolution
+  - Works with both push and pull operations
+  - UUID format validated on input with clear error messages
 
 ### 3.5.2
 
@@ -272,6 +282,8 @@ Options:
         configuration map in a push or pull. Default: false
       --skip-disabled                                   A boolean flag that indicates whether
         disabled channels should be pushed or pulled. Default: false
+      --channel-id CHANNEL_ID                              Filter operations to only affect the
+        channel with this specific ID. Must be a valid UUID format.
   -d, --deploy                                         Deploy channels on push
         During a push, deploy each included channel immediately
         after saving the channel to Mirth.
@@ -404,6 +416,31 @@ $ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u 
 - **Performance**: Significantly faster when pushing multiple channels
 - **Dependency Management**: Allows Mirth's dependency logic to control deployment order
 - **Recommended**: The preferred approach for production deployments with multiple channels
+
+### Single Channel Operations
+
+mirthSync supports targeting a single channel by its UUID, useful when you only need to pull or push one specific channel without affecting all other server resources.
+
+**Pull a single channel by ID:**
+``` shell
+$ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u admin -p admin --channel-id "1b82a0e4-f80c-44b7-8147-43e1f1239fb6" -t ./mirth-config pull
+```
+
+**Push a single channel by ID:**
+``` shell
+$ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u admin -p admin --channel-id "1b82a0e4-f80c-44b7-8147-43e1f1239fb6" -t ./mirth-config push
+```
+
+**Combine with deployment:**
+``` shell
+$ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u admin -p admin --channel-id "1b82a0e4-f80c-44b7-8147-43e1f1239fb6" --deploy -t ./mirth-config push
+```
+
+**How it works:**
+- When `--channel-id` is specified, mirthSync only processes channel-groups (for path resolution) and the target channel
+- All other API resources (code templates, global scripts, alerts, etc.) are skipped
+- Channel groups are preprocessed but not written to disk, ensuring the channel is placed in the correct group directory
+- The channel ID must be a valid UUID format (e.g., `1b82a0e4-f80c-44b7-8147-43e1f1239fb6`)
 
 ### Orphaned File Management
 
