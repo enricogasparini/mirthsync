@@ -1,5 +1,5 @@
 # Build stage - compile with Leiningen
-FROM clojure:temurin-8-lein AS builder
+FROM clojure:temurin-21-lein AS builder
 
 WORKDIR /build
 
@@ -17,7 +17,7 @@ COPY dev-resources/ dev-resources/
 RUN lein uberjar
 
 # Runtime stage - minimal Java image
-FROM eclipse-temurin:8-jre
+FROM eclipse-temurin:21-jre
 
 LABEL org.opencontainers.image.source="https://github.com/enricogasparini/mirthsync"
 LABEL org.opencontainers.image.description="MirthSync - Mirth Connect configuration sync tool (with channel-id filtering)"
