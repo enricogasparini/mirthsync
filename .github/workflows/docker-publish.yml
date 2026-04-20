@@ -50,7 +50,6 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short,prefix=master-,enable={{is_default_branch}}
-            type=ref,event=branch
             type=semver,pattern={{version}}
 
       - name: Set up Docker Buildx
