@@ -1,8 +1,22 @@
 (ns mirthsync.cli-test
   (:require [mirthsync.cli :refer :all]
+            [mirthsync.version :as ver]
             [clojure.test :refer :all]
             [clojure.tools
              [cli :refer [parse-opts]]]))
+
+(deftest version-flag
+  ;; --version short-circuits like --help: it prints the version and exits 0
+  ;; without requiring --target/--server/authentication. Assert against the
+  ;; version namespace value (not a literal) so it survives version bumps.
+  (testing "--version yields exit 0 and the version string, no other args needed"
+    (let [conf (config ["--version"])]
+      (is (= 0 (:exit-code conf)))
+      (is (= ver/version (:exit-msg conf)))))
+  (testing "-V short alias behaves the same"
+    (let [conf (config ["-V"])]
+      (is (= 0 (:exit-code conf)))
+      (is (= ver/version (:exit-msg conf))))))
 
 (deftest configuration
   (testing "Fail on invalid arguments"
@@ -42,7 +56,8 @@
                 :git-author (System/getProperty "user.name"),
                 :auto-commit false,
                 :git-init false,
-                :delete-orphaned false}]
+                :delete-orphaned false,
+                :sort-unordered true}]
       (is (= conf (config ["-s" "https://localhost:8443/api/" "-u" "admin" "-p" "password"  "-t" "./tmp/" "push"])))))
 
   (testing "Sensible pull defaults"
@@ -67,7 +82,8 @@
                 :git-author (System/getProperty "user.name"),
                 :auto-commit false,
                 :git-init false,
-                :delete-orphaned false}]
+                :delete-orphaned false,
+                :sort-unordered true}]
       (is (= conf (config ["-f" "-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "pull"])))))
 
   (testing "Force defaults to nil"
@@ -143,7 +159,7 @@
     (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
                          "--channel-id" "1B82A0E4-F80C-44B7-8147-43E1F1239FB6" "pull"])]
       (is (= 0 (:exit-code conf)))
-      (is (= "1B82A0E4-F80C-44B7-8147-43E1F1239FB6" (:channel-id conf)))))
+      (is (= "1b82a0e4-f80c-44b7-8147-43e1f1239fb6" (:channel-id conf)))))
 
   (testing "No channel-id flag defaults to nil"
     (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "pull"])]
@@ -164,5 +180,73 @@
     (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo"
                          "--channel-id" "1b82a0e4f80c44b7814743e1f1239fb6" "pull"])]
       (is (= 1 (:exit-code conf))))))
+
+(deftest channel-id-disk-modes
+  (doseq [mode ["code" "items" "groups" "backup"]
+          action ["push" "pull"]]
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password"
+                        "-t" "foo" "--channel-id" "1b82a0e4-f80c-44b7-8147-43e1f1239fb6"
+                        "--disk-mode" mode action])]
+      (if (#{"groups" "backup"} mode)
+        (do (is (= 1 (:exit-code conf)))
+            (is (re-find #"--channel-id requires --disk-mode code or items" (:exit-msg conf))))
+        (is (= 0 (:exit-code conf)))))))
+
+(deftest selective-deployment-flags
+  (testing "Deploy-changed flag is parsed correctly"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "--deploy-changed" "push"])]
+      (is (= true (:deploy-changed conf)))))
+
+  (testing "Deploy-changed defaults to nil"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "push"])]
+      (is (nil? (:deploy-changed conf)))))
+
+  (testing "Deploy-changed is independent from other deploy flags"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "--deploy-changed" "push"])]
+      (is (= true (:deploy-changed conf)))
+      (is (nil? (:deploy conf)))
+      (is (nil? (:deploy-all conf)))))
+
+  (testing "Deploy-new flag is parsed correctly"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "--deploy-new" "push"])]
+      (is (= true (:deploy-new conf)))))
+
+  (testing "Deploy-new defaults to nil"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "push"])]
+      (is (nil? (:deploy-new conf)))))
+
+  (testing "Deploy-new can be combined with deploy-changed"
+    (let [conf (config ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "password" "-t" "foo" "--deploy-changed" "--deploy-new" "push"])]
+      (is (= true (:deploy-changed conf)))
+      (is (= true (:deploy-new conf))))))
+
+(deftest restrict-to-path-separator-normalization
+  ;; A restrict-to-path supplied with forward slashes must be normalized to
+  ;; the platform File/separator so it matches OS-native file paths; on
+  ;; Windows a forward-slash prefix would otherwise never match the backslash
+  ;; file paths that the push/pull filtering compares against.
+  (let [sep java.io.File/separator
+        rtp (fn [path]
+              (:restrict-to-path
+               (config ["-s" "https://localhost:8443/api" "-u" "admin"
+                        "-p" "password" "-t" "foo" "-r" path "pull"])))]
+    (testing "Forward slashes are normalized to the platform separator"
+      (is (= (clojure.string/join sep ["Channels" "GroupA" "ChannelA"])
+             (rtp "Channels/GroupA/ChannelA"))))
+
+    (testing "Backslashes are normalized to the platform separator"
+      (is (= (clojure.string/join sep ["Channels" "GroupA" "ChannelA"])
+             (rtp "Channels\\GroupA\\ChannelA"))))
+
+    (testing "Mixed and repeated separators collapse to a single separator"
+      (is (= (clojure.string/join sep ["Channels" "GroupA" "ChannelA"])
+             (rtp "Channels//GroupA\\\\ChannelA"))))
+
+    (testing "Trailing separators are still stripped after normalization"
+      (is (= (clojure.string/join sep ["Channels" "GroupA"])
+             (rtp "Channels/GroupA/"))))
+
+    (testing "An empty restrict-to-path remains empty"
+      (is (= "" (rtp ""))))))
 
 
