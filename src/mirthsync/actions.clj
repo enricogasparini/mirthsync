@@ -10,6 +10,14 @@
             [mirthsync.xml :as mxml])
   (:import java.io.File))
 
+(defn- uploads-code-templates?
+  [{:keys [api el-loc]}]
+  (or (contains? #{:code-templates :code-template-libraries} api)
+      (and (= :server-configuration api)
+           ;; Empty template sections also count: restoring them removes templates.
+           (some #(contains? #{:codeTemplates :codeTemplateLibraries} (:tag %))
+                 (:content (cz/node el-loc))))))
+
 (defn- upload-node
   "Extracts the id from the xmlloc using the find-id predicates. PUTs or
   POSTs the params to the location constructed from the base-url,
@@ -21,7 +29,9 @@
                  (mhttp/post-xml app-conf (mi/post-path api) params query-params true)
                  (mhttp/put-xml app-conf query-params))]
     (if (mi/after-push api app-conf result)
-      app-conf
+      (cond-> app-conf
+        (and (:deploy-changed app-conf) (uploads-code-templates? app-conf))
+        (assoc :code-templates-pushed true))
       (assoc app-conf :exit-code 1 :exit-msg "Failure(s) were encountered during the push"))))
 
 (defn fetch-and-pre-assoc
@@ -46,126 +56,145 @@
             tag (:tag node)
             next-el-loc (if-let
                             [fileref (when tag (:msync-fileref (:attrs node)))]
-                          (let [file-text (slurp (str (mf/remove-extension (.toString ^File main-file)) File/separator (mf/safe-name fileref)))]
+                          ;; fileref is the exact name pull wrote, whichever version wrote it, so it
+                          ;; is read as-is rather than passed through safe-name again
+                          (let [file-text (slurp (str (mf/remove-extension (.toString ^File main-file))
+                                                      File/separator
+                                                      (mf/assert-file-name fileref)))]
                             (cz/next (cz/edit el-loc (fn [node]
                                                        (assoc (assoc node :content (list file-text)) :attrs (dissoc (:attrs node) :msync-fileref))))))
                           (cz/next el-loc))]
 
         (recur next-el-loc)))))
 
-(defn- local-locs
-  "Lazy sequence of local el-locs for the current api."
-  [{:keys [api restrict-to-path target channel-id] :as app-conf}]
+(defn- restricted-files
+  "The current api's files on disk that --restrict-to-path takes."
+  [{:keys [api restrict-to-path target]}]
+  (let [files (vec (mi/api-files api (mi/local-path api target)))
+        ;; A push decides from the disk, so every api agrees.
+        matches? (mf/restrict-matcher
+                  target restrict-to-path
+                  (mf/restrict-names-item? target restrict-to-path
+                                           (map #(.toString ^File %) files)))]
+    (log/debugf "restrict-to-path: %s" restrict-to-path)
+    (filterv #(if (matches? (.toString ^File %))
+                (do (when (seq restrict-to-path)
+                      (log/debugf "Found a match: %s" %))
+                    true)
+                (do (log/debugf "filtering push of '%s' since it is outside the restrict-to-path %s" % restrict-to-path)
+                    false))
+             files)))
 
-  (let [^String required-prefix (str target File/separator restrict-to-path)]
-    (log/debugf "required-prefix: %s" required-prefix)
-
-    (sequence
-     (comp (filter #(let [matches (.startsWith (.toString ^File %) required-prefix)]
-                    (if matches
-                      (do (when (seq restrict-to-path)
-                            (log/debugf "Found a match: %s" %))
-                          true)
-                      (do (log/debugf "filtering push of '%s' since it does not start with our required prefix: %s" % required-prefix)
-                          false))))
-          (map #(expand-filerefs %
-                                (mxml/to-zip
-                                 (do
-                                   (log/debugf "\tFile: %s" (.toString ^File %))
-                                   (slurp %)))))
-          ;; Filter by channel ID if specified
-          (filter #(if (and channel-id (= api :channels))
-                     (let [id (mi/find-id api %)]
-                       (if (= id channel-id)
-                         (do (log/infof "Channel ID match: %s" id) true)
-                         (do (log/debugf "Filtering out channel with ID: %s (looking for %s)" id channel-id) false)))
-                     true))
-          (filter #(not (mi/should-skip? api % app-conf))))
-     (mi/api-files api (mi/local-path api (:target app-conf))))))
+(defn- file-locs
+  "Lazy sequence of el-locs read from files for the current api."
+  [{:keys [api channel-id] :as app-conf} files]
+  (sequence
+   (comp (map (fn [^File file]
+                (log/debugf "\tFile: %s" (.toString file))
+                [file (mxml/to-zip (slurp file))]))
+         (filter #(or (nil? channel-id)
+                      (not= api :channels)
+                      (= channel-id (mi/find-id api (second %)))))
+         (map (fn [[file loc]] (expand-filerefs file loc)))
+         (filter #(not (mi/should-skip? api % app-conf))))
+   files))
 
 (defn- remote-locs
-  "Seq of remote el-locs for the current api. Could be lazy or not
-  depending on the implementation of find-elements."
+  "Lazy seq of remote el-locs for the current api, each detached from
+  the full server response."
   [{:keys [api channel-id] :as app-conf}]
-  (cond
-    ;; When channel-id is specified and we're processing channels
-    (and channel-id (= api :channels))
-    (do
-      (log/infof "Fetching channel with ID: %s" channel-id)
-      (mhttp/fetch-channel-by-id app-conf channel-id))
-
-    ;; When channel-id is specified and we're processing channel-groups (for preprocessing only)
-    (and channel-id (= api :channel-groups))
-    (do
-      (log/infof "Fetching channel groups for preprocessing")
-      (mhttp/fetch-all app-conf (partial mi/find-elements api)))
-
-    ;; Original behavior - fetch all
-    :else
-    (mhttp/fetch-all app-conf (partial mi/find-elements api))))
+  ;; Re-zip each node since it's part of the full server response and the
+  ;; callers shouldn't be exposed to that. cz/root would return the whole
+  ;; response, and walking with cz/next until cz/end? would go on through
+  ;; every element that follows.
+  (map #(cz/xml-zip (cz/node %))
+       (if (and channel-id (= api :channels))
+         (mhttp/fetch-channel-by-id app-conf channel-id)
+         (mhttp/fetch-all app-conf (partial mi/find-elements api)))))
 
 (defn-  process-nodes
-  "Prints the message and processes the el-locs via the action."
+  "Prints the message and processes the el-locs via the action. Each
+  el-loc must be rooted at its own node, as remote-locs and file-locs
+  return them."
   [{:keys [api] :as app-conf} msg el-locs action]
   (log/info msg)
   (loop [app-conf app-conf
          el-locs el-locs]
     (if-let [el-loc (first el-locs)]
       (recur
-                                    ; We need to re-zip our node since it's part
-                                    ; of a larger doc and the called code
-                                    ; shouldn't be exposed to that. cz/root for instance
-                                    ; would return something unexpected.
-       (->> (assoc app-conf :el-loc (cz/xml-zip (cz/node el-loc)))
+       (->> (assoc app-conf :el-loc el-loc)
             (mi/pre-node-action api)
             action)
        (rest el-locs))
       app-conf)))
 
+(defn- expected-file-paths
+  "The file paths the given remote el-locs would be written to."
+  [{:keys [api] :as app-conf} el-locs]
+  (set (mapcat (fn [el-loc]
+                 (let [app-conf-with-el (assoc app-conf :el-loc el-loc)]
+                   (map first (mi/deconstruct-node app-conf-with-el (mi/file-path api app-conf-with-el) el-loc))))
+               el-locs)))
+
 (defn download
   "Serializes all xml found at the api rest-path to the filesystem using the
   supplied config. Returns a (potentially) updated app-conf with
   details about the fetched apis."
-  [{:keys [api channel-id] :as app-conf}]
-  ;; When channel-id is specified and we're processing channel-groups,
-  ;; we only want to preprocess (not write files)
+  [{:keys [api target restrict-to-path channel-id] :as app-conf}]
   (if (and channel-id (= api :channel-groups))
-    ;; Just fetch and preprocess for server-groups data, don't write files
-    (let [groups-locs (remote-locs app-conf)]
-      (log/info "Preprocessing channel groups for channel ID lookup")
-      (loop [app-conf app-conf
-             group-locs groups-locs]
-        (if-let [group-loc (first group-locs)]
-          (recur (mi/pre-node-action api (assoc app-conf :el-loc (cz/xml-zip (cz/node group-loc))))
-                 (rest group-locs))
-          app-conf)))
-    ;; Normal download behavior
-    (process-nodes
-     app-conf
-     (str "Downloading from " (mhttp/api-url app-conf) " to " (mi/local-path api (:target app-conf)))
-     (remote-locs app-conf)
-     mxml/serialize-node)))
+    app-conf
+    (let [el-locs (vec (remote-locs app-conf))
+          ;; Whether -r names an item exactly is judged against what the server
+          ;; has (each item's main path; no file is read) and the disk, so a
+          ;; pull of a channel not yet on disk is still exact. The disk keeps
+          ;; the apis in step: channel-groups and code-template-libraries run
+          ;; first and write the group's or library's index.xml, so channels and
+          ;; code-templates see `Channels/Lab` as the exact group too.
+          exact? (mf/restrict-names-item?
+                  target restrict-to-path
+                  (when (seq restrict-to-path)
+                    (map #(mi/file-path api (assoc app-conf :el-loc %)) el-locs)))
+          matches? (mf/restrict-matcher target restrict-to-path exact?)]
+      (-> (process-nodes
+           (assoc app-conf :restrict-match? matches?)
+           (str "Downloading from " (mhttp/api-url app-conf) " to " (mi/local-path api (:target app-conf)))
+           el-locs
+           mxml/serialize-node)
+          (dissoc :restrict-match?)))))
 
 (defn upload
   "Takes the current app-conf with the current api and finds associated
   files within the target directory. The files in the specified path
   directory are each read and handed to upload-node to push to Mirth."
-  [{:keys [api] :as app-conf}]
+  [{:keys [api channel-id] :as app-conf}]
+  (if (and channel-id (= api :channel-groups))
+    app-conf
+    (let [files (restricted-files app-conf)]
+      (cond-> (process-nodes
+               app-conf
+               (str "Uploading from " (mi/local-path api (:target app-conf)) " to " (mi/rest-path api))
+               (file-locs app-conf files)
+               upload-node)
+        (seq files) (assoc :restrict-found-items? true)))))
 
-  (process-nodes
-       app-conf
-       (str "Uploading from " (mi/local-path api (:target app-conf)) " to " (mi/rest-path api))
-       (local-locs app-conf)
-       upload-node))
+(defn warn-if-restrict-matched-nothing
+  "Warns when a --restrict-to-path was given and no api's push or pull took
+  anything under it (see :restrict-found-items?). Such a run does nothing, which
+  is easy to miss, most often after item names were encoded differently.
+  Returns app-conf."
+  [{:keys [action restrict-to-path restrict-found-items?] :as app-conf}]
+  (when (and (seq restrict-to-path) (not restrict-found-items?))
+    (log/warn (str "--restrict-to-path '" restrict-to-path "' matched no items, so nothing was "
+                   (if (= "push" action) "pushed" "pulled") ". "
+                   "The path is relative to the target directory, is case sensitive, and uses "
+                   "the file and folder names mirthsync writes, where some characters are "
+                   "encoded, for example ':' as '%3A'.")))
+  app-conf)
 
 (defn get-remote-expected-file-paths
   "Get a set of file paths that would be generated from remote elements."
-  [{:keys [api] :as app-conf}]
-  (let [remote-elements (remote-locs app-conf)]
-    (set (mapcat (fn [el-loc]
-                   (let [app-conf-with-el (assoc app-conf :el-loc el-loc)]
-                     (map first (mi/deconstruct-node app-conf-with-el (mi/file-path api app-conf-with-el) el-loc))))
-                 remote-elements))))
+  [app-conf]
+  (expected-file-paths app-conf (remote-locs app-conf)))
 
 (defn- find-orphaned-files-in-list
   "Find files in the provided list that don't have corresponding expected paths.
@@ -242,35 +271,37 @@
   "Get all files (not just XML) in a directory tree."
   [dir]
   (when (.exists (io/file dir))
-    (filter #(.isFile %) (file-seq (io/file dir)))))
+    (filter #(.isFile ^File %) (file-seq (io/file dir)))))
 
 (defn capture-pre-pull-local-files
   "Capture API-managed local files before pull operation for orphan detection."
-  [{:keys [api] :as app-conf}]
+  [{:keys [api channel-id] :as app-conf}]
   (let [local-path (mi/local-path api (:target app-conf))
         target-path (:target app-conf)
-        ;; Normalize paths by removing trailing slashes for comparison
-        normalized-local (if (.endsWith local-path "/")
-                           (.substring local-path 0 (dec (.length local-path)))
+        ;; Normalize paths by removing trailing separators for comparison
+        normalized-local (if (.endsWith ^String local-path File/separator)
+                           (.substring ^String local-path 0 (dec (.length ^String local-path)))
                            local-path)
-        normalized-target (if (.endsWith target-path "/")
-                            (.substring target-path 0 (dec (.length target-path)))
+        normalized-target (if (.endsWith ^String target-path File/separator)
+                            (.substring ^String target-path 0 (dec (.length ^String target-path)))
                             target-path)
         ;; For APIs that use the root target directory (like configuration-map, resources),
         ;; only capture files that match the API's file pattern instead of all files
-        api-managed-files (if (= normalized-local normalized-target)
+        api-managed-files (cond
+                            (and channel-id (= api :channel-groups)) []
+
+                            (and channel-id (= api :channels))
+                            (mapcat (fn [^File file]
+                                      (when (= channel-id (mi/find-id api (mxml/to-zip (slurp file))))
+                                        (cons file (all-files-seq (mf/remove-extension (.toString file))))))
+                                    (mi/api-files api local-path))
+
+                            (= normalized-local normalized-target)
                             ;; For root-level APIs, use mi/api-files to get only managed files
                             (mi/api-files api local-path)
                             ;; For subdirectory APIs, capture all files in their directory
-                            (all-files-seq local-path))]
+                            :else (all-files-seq local-path))]
     (update app-conf :pre-pull-local-files (fnil into []) api-managed-files)))
-
-(defn capture-expected-paths
-  "Capture expected file paths from remote server before pull operation."
-  [{:keys [api] :as app-conf}]
-  (let [expected-paths (get-remote-expected-file-paths app-conf)]
-    (assoc app-conf :expected-paths expected-paths)))
-
 
 (defn cleanup-orphaned-files-with-pre-pull
   "Clean up orphaned local files using pre-pull captured files."

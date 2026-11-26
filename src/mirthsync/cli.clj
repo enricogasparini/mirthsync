@@ -5,6 +5,7 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [mirthsync.logging :as log]
+            [mirthsync.version :as ver]
             [environ.core :refer [env]])
   (:import java.net.URL
            java.io.File))
@@ -15,6 +16,15 @@
   [s]
   (when s
     (str/replace s #"(?!^)[\\/]+$" "")))
+
+(defn- normalize-path-separators
+  "Collapses runs of forward and/or backward slashes into the platform's
+  File/separator. A restrict-to-path is matched against OS-native file paths
+  (see mirthsync.files/restrict-matcher), so a path supplied with forward slashes must
+  be normalized to the platform separator to match the file paths on Windows."
+  [s]
+  (when s
+    (str/replace s #"[\\/]+" (java.util.regex.Matcher/quoteReplacement File/separator))))
 
 (def ^{:private true} cli-options
   [["-s" "--server SERVER_URL" "Full HTTP(s) url of the Mirth Connect server"
@@ -65,10 +75,12 @@
         path may refer to a filename specifically or a directory. If the path
         refers to a file - only that file will be pushed. If the path refers to
         a directory - the push will be limited to resources contained within
-        that directory. The RESTRICT_TO_PATH must be specified relative to
-        the target directory."
+        that directory. A channel may be named without its extension. If the
+        path names no file or directory exactly, it is used as a prefix and
+        takes every path that starts with it. The RESTRICT_TO_PATH must be
+        specified relative to the target directory."
     :default ""
-    :parse-fn strip-trailing-slashes]
+    :parse-fn (comp strip-trailing-slashes normalize-path-separators)]
 
    [nil "--include-configuration-map" " A boolean flag to include the
         configuration map in a push or pull. Default: false"
@@ -80,6 +92,7 @@
 
    [nil "--channel-id CHANNEL_ID" "Filter operations to only affect the channel with this specific ID"
     :default nil
+    :parse-fn str/lower-case
     :validate [#(or (nil? %)
                     (re-matches #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$" %))
                "Channel ID must be a valid UUID format (e.g., 1b82a0e4-f80c-44b7-8147-43e1f1239fb6)"]]
@@ -91,6 +104,16 @@
    [nil "--deploy-all" "Deploy all channels in one API call at the end
         During a push, collect all channel IDs and deploy them together
         at the end, allowing Mirth's dependency logic to control order."]
+
+   [nil "--deploy-changed" "Deploy only changed channels after push
+        After all channels are saved, query the server for channel statuses
+        and deploy only those with a non-zero deployedRevisionDelta or
+        where codeTemplatesChanged is true and this push saved code templates."]
+
+   [nil "--deploy-new" "Deploy channels that are not currently deployed
+        Use with --deploy-changed. During push, tracks which channels were
+        saved. After push, any saved channel not found in the dashboard
+        statuses (i.e. not currently deployed) will also be deployed."]
 
    ["-I" "--interactive" "
         Allow for console prompts for user input"]
@@ -115,6 +138,16 @@
         delete any local files that no longer exist on the remote server.
         Use with --interactive to confirm deletions before they occur."
     :default false]
+
+   [nil "--[no-]sort-unordered" "Sort unordered collections during a pull.
+        Mirth stores some collections (code template context types,
+        library and alert channel IDs, the configuration map, etc.) in
+        no fixed order, which creates noisy diffs between pulls. These
+        are sorted by default; use --no-sort-unordered to write them
+        in the order the server returns them."
+    :default true]
+
+   ["-V" "--version" "Print version and exit"]
 
    ["-h" "--help"]])
 
@@ -161,7 +194,7 @@
 (defn- valid-initial-config?
   "Validate the initial config map. Returns a truth value."
   [{:keys [arguments errors] :as config
-    {:keys [help target restrict-to-path password server username token]} :options}]
+    {:keys [help target restrict-to-path password server username token channel-id disk-mode]} :options}]
   (or help
       (let [action (first arguments)
             git-action? (= "git" action)
@@ -183,6 +216,7 @@
              (#{"pull" "push" "git"} action)
              server-valid?
              auth-mutually-exclusive?
+             (not (and channel-id (#{"groups" "backup"} disk-mode)))
              (is-child-path target restrict-to-path)))))
 
 (defn read-password
@@ -249,18 +283,22 @@
                        (assoc % :git-subcommand-args git-args)
                        %))
                    
-                   ;; Set up our exit code
+                   ;; Set up our exit code. --version short-circuits cleanly
+                   ;; (like --help) without requiring --target/--server/auth.
                    (assoc :exit-code
-                          (if (or (:errors config)
-                                  (not args-valid?))
+                          (if (and (not (get-in config [:options :version]))
+                                   (or (:errors config)
+                                       (not args-valid?)))
                             1
                             0)))
 
         config (-> config
                    ;; exit message if errors - add custom validation errors
                    (assoc :exit-msg
-                          (when (or (> (:exit-code config) 0)
-                                    (:help config))
+                          (cond
+                            (:version config) ver/version
+                            (or (> (:exit-code config) 0)
+                                (:help config))
                             (let [action (first (:arguments config))
                                   git-action? (= "git" action)
                                   has-username? (:username config)
@@ -274,6 +312,10 @@
                                                   (cond-> []
                                                     (not (:server config))
                                                     (conj "--server is required for push/pull operations")
+
+                                                    (and (:channel-id config)
+                                                         (#{"groups" "backup"} (:disk-mode config)))
+                                                    (conj "--channel-id requires --disk-mode code or items")
 
                                                     ;; Check for mutually exclusive auth
                                                     (and has-username-password? has-token?)
