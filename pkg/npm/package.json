@@ -1,6 +1,6 @@
 {
   "name": "@saga-it/mirthsync",
-  "version": "3.5.2",
+  "version": "3.9.0",
   "description": "DevOps tool for Mirth Connect and Open Integration Engine version control and CI/CD automation",
   "keywords": [
     "mirth",
@@ -16,7 +16,7 @@
     "version-control",
     "integration-engine"
   ],
-  "homepage": "https://github.com/SagaHealthcareIT/mirthsync",
+  "homepage": "https://saga-it.com/products/mirthsync",
   "bugs": {
     "url": "https://github.com/SagaHealthcareIT/mirthsync/issues"
   },
@@ -27,7 +27,7 @@
     "url": "git+https://github.com/SagaHealthcareIT/mirthsync.git"
   },
   "bin": {
-    "mirthsync": "./bin/mirthsync.js"
+    "mirthsync": "bin/mirthsync.js"
   },
   "files": [
     "bin/",

@@ -1,7 +1,11 @@
 (ns mirthsync.delete-orphaned-test
   (:require [mirthsync.actions :refer :all]
+            [mirthsync.apis :as api]
             [mirthsync.cli :refer :all]
+            [mirthsync.files :as mf]
+            [mirthsync.http-client :as mhttp]
             [mirthsync.interfaces :as mi]
+            [mirthsync.xml :as mxml]
             [mirthsync.fixture-tools :refer [build-path]]
             [clojure.test :refer :all]
             [clojure.java.io :as io]))
@@ -31,7 +35,7 @@
                     :target (build-path "target" "test")}
           mock-managed-files [(io/file (build-path "target" "test" "ConfigurationMap.xml"))]
           mock-user-file (io/file (build-path "target" "test" "user-file.txt"))]
-      (with-redefs [mi/local-path (fn [_ _] (str (build-path "target" "test") "/"))  ; Root directory with trailing slash
+      (with-redefs [mi/local-path (fn [_ _] (str (build-path "target" "test") java.io.File/separator))  ; Root directory with trailing separator
                     mi/api-files (fn [_ _] mock-managed-files)]  ; Only returns managed files
         (let [result (capture-pre-pull-local-files app-conf)]
           (is (contains? (set (:pre-pull-local-files result)) (first mock-managed-files)))
@@ -47,15 +51,15 @@
         ; Root API should only capture managed files returned by mi/api-files
         (let [result (capture-pre-pull-local-files root-api-conf)]
           (is (= 1 (count (:pre-pull-local-files result))))
-          (is (= managed-files (:pre-pull-local-files result))))))))
+          (is (= managed-files (:pre-pull-local-files result)))))))
 
-  (testing "path normalization handles trailing slashes correctly"
+  (testing "path normalization handles trailing separators correctly"
     (let [app-conf {:api :resources
-                    :target (build-path "target" "test")}]  ; No trailing slash
-      (with-redefs [mi/local-path (fn [_ _] (str (build-path "target" "test") "/"))  ; With trailing slash
+                    :target (build-path "target" "test")}]  ; No trailing separator
+      (with-redefs [mi/local-path (fn [_ _] (str (build-path "target" "test") java.io.File/separator))  ; With trailing separator
                     mi/api-files (fn [_ _] [(io/file (build-path "target" "test" "Resources.xml"))])]
         (let [result (capture-pre-pull-local-files app-conf)]
-          (is (= 1 (count (:pre-pull-local-files result))))))))
+          (is (= 1 (count (:pre-pull-local-files result)))))))))
 
 (deftest cleanup-orphaned-files-with-pre-pull-test
   (testing "does not delete user files in root directory"
@@ -174,3 +178,251 @@
               "Should find exactly one orphaned file")
           (is (= (.getCanonicalPath orphan-file) (.getCanonicalPath (first orphaned)))
               "Should identify the correct orphaned file"))))))
+
+;;;; Synthetic server: channels in groups of 30, each pulled in code disk mode
+;;;; to its xml file plus 9 scripts.
+
+(def ^:private channels-per-group 30)
+
+(defn- group-name [g] (str "Group " g))
+(defn- channel-name [n] (str "Channel " n))
+(defn- destination-name [n] (str "To System " n))
+(defn- channel-id [n] (format "00000000-0000-0000-0000-%012d" n))
+
+(def ^:private channel-xml
+  "<channel version='4.5.2'>
+  <id>%1$s</id>
+  <nextMetaDataId>2</nextMetaDataId>
+  <name>%2$s</name>
+  <revision>1</revision>
+  <sourceConnector version='4.5.2'>
+    <metaDataId>0</metaDataId>
+    <name>sourceConnector</name>
+    <properties class='com.mirth.connect.connectors.vm.VmReceiverProperties' version='4.5.2'>
+      <pluginProperties/>
+      <sourceConnectorProperties version='4.5.2'>
+        <responseVariable>None</responseVariable>
+        <respondAfterProcessing>true</respondAfterProcessing>
+        <processingThreads>1</processingThreads>
+        <queueBufferSize>1000</queueBufferSize>
+      </sourceConnectorProperties>
+    </properties>
+    <transformer version='4.5.2'>
+      <elements>
+        <com.mirth.connect.plugins.javascriptstep.JavaScriptStep version='4.5.2'>
+          <name>Map fields</name>
+          <sequenceNumber>0</sequenceNumber>
+          <enabled>true</enabled>
+          <script>channelMap.put('source', '%2$s');</script>
+        </com.mirth.connect.plugins.javascriptstep.JavaScriptStep>
+      </elements>
+      <inboundDataType>RAW</inboundDataType>
+      <outboundDataType>RAW</outboundDataType>
+    </transformer>
+    <filter version='4.5.2'>
+      <elements>
+        <com.mirth.connect.plugins.javascriptrule.JavaScriptRule version='4.5.2'>
+          <name>Accept</name>
+          <sequenceNumber>0</sequenceNumber>
+          <enabled>true</enabled>
+          <script>return true;</script>
+        </com.mirth.connect.plugins.javascriptrule.JavaScriptRule>
+      </elements>
+    </filter>
+    <transportName>Channel Reader</transportName>
+    <mode>SOURCE</mode>
+    <enabled>true</enabled>
+  </sourceConnector>
+  <destinationConnectors>
+    <connector version='4.5.2'>
+      <metaDataId>1</metaDataId>
+      <name>%3$s</name>
+      <properties class='com.mirth.connect.connectors.js.JavaScriptDispatcherProperties' version='4.5.2'>
+        <pluginProperties/>
+        <destinationConnectorProperties version='4.5.2'>
+          <queueEnabled>false</queueEnabled>
+          <retryCount>0</retryCount>
+          <threadCount>1</threadCount>
+        </destinationConnectorProperties>
+        <script>logger.info('%3$s');</script>
+      </properties>
+      <transformer version='4.5.2'>
+        <elements>
+          <com.mirth.connect.plugins.javascriptstep.JavaScriptStep version='4.5.2'>
+            <sequenceNumber>0</sequenceNumber>
+            <enabled>true</enabled>
+            <script>msg = msg;</script>
+          </com.mirth.connect.plugins.javascriptstep.JavaScriptStep>
+        </elements>
+        <inboundDataType>RAW</inboundDataType>
+        <outboundDataType>RAW</outboundDataType>
+      </transformer>
+      <filter version='4.5.2'>
+        <elements>
+          <com.mirth.connect.plugins.javascriptrule.JavaScriptRule version='4.5.2'>
+            <name>true</name>
+            <sequenceNumber>0</sequenceNumber>
+            <enabled>true</enabled>
+            <script>return true;</script>
+          </com.mirth.connect.plugins.javascriptrule.JavaScriptRule>
+        </elements>
+      </filter>
+      <transportName>JavaScript Writer</transportName>
+      <mode>DESTINATION</mode>
+      <enabled>true</enabled>
+    </connector>
+  </destinationConnectors>
+  <preprocessingScript>return message;</preprocessingScript>
+  <postprocessingScript>return;</postprocessingScript>
+  <deployScript>return;</deployScript>
+  <undeployScript>return;</undeployScript>
+  <exportData>
+    <metadata>
+      <enabled>true</enabled>
+    </metadata>
+  </exportData>
+</channel>")
+
+(defn- group-xml [g channel-ns]
+  (str "<channelGroup version='4.5.2'><id>group-" g "</id><name>" (group-name g) "</name><channels>"
+       (apply str (map #(str "<channel version='4.5.2'><id>" (channel-id %) "</id></channel>") channel-ns))
+       "</channels></channelGroup>"))
+
+(defn- synthetic-server
+  "Server responses by api, holding channels 0 to n-channels - 1."
+  [n-channels]
+  {:channel-groups (str "<list>"
+                        (apply str (map-indexed group-xml (partition-all channels-per-group (range n-channels))))
+                        "</list>")
+   :channels (str "<list>"
+                  (apply str (map #(format channel-xml (channel-id %) (channel-name %) (destination-name %))
+                                  (range n-channels)))
+                  "</list>")})
+
+(defn- synthetic-channel-files
+  "Paths of the 10 files a code disk mode pull writes for channel n."
+  [target n]
+  (let [dir (build-path target "Channels" (group-name (quot n channels-per-group)) (channel-name n))
+        destination (str "destinationConnector-" (destination-name n))]
+    (cons (str dir ".xml")
+          (map #(build-path dir (str % ".js"))
+               ["sourceConnector-transformer-step-0-Map fields"
+                "sourceConnector-filter-step-0-Accept"
+                destination
+                (str destination "-transformer-step-0")
+                (str destination "-filter-step-0-true")
+                "PreprocessingScript"
+                "PostprocessingScript"
+                "DeployScript"
+                "UndeployScript"]))))
+
+(defn- serve
+  "Stands in for mhttp/fetch-all, answering from the synthetic server."
+  [server]
+  (fn [{:keys [api]} find-elements]
+    (find-elements (mxml/to-zip (get server api)))))
+
+(defn- canonical-paths [files]
+  (set (map #(.getCanonicalPath (io/file %)) files)))
+
+(deftest remote-expected-paths-test
+  (let [target (build-path "target" "orphan-check-test")
+        apis [:channel-groups :channels]
+        delete-target #(doseq [f (reverse (file-seq (io/file target)))] (io/delete-file f true))]
+    (delete-target)
+    (with-redefs [mhttp/fetch-all (serve (synthetic-server 3))]
+      (let [conf (api/iterate-apis {:target target :disk-mode "code"} apis api/preprocess-api)
+            conf (api/iterate-apis conf apis download)
+            pulled (filter #(.isFile ^java.io.File %) (file-seq (io/file target)))]
+        (testing "the pull writes each channel's xml and scripts"
+          (is (= (canonical-paths (cons (build-path target "Channels" (group-name 0) "index.xml")
+                                        (mapcat #(synthetic-channel-files target %) (range 3))))
+                 (canonical-paths pulled))))
+
+        (testing "expected paths are the pulled files, not the scripts of the channels that follow"
+          (is (= (canonical-paths pulled)
+                 (canonical-paths (mapcat #(get-remote-expected-file-paths (assoc conf :api %)) apis)))))
+
+        (testing "a stale script named like a later channel's script is an orphan"
+          (let [stale (io/file (build-path target "Channels" (group-name 0) (channel-name 0)
+                                           (str "destinationConnector-" (destination-name 1) ".js")))
+                orphans (atom nil)]
+            (spit stale "")
+            (with-redefs [delete-orphaned-files (fn [conf files] (reset! orphans files) conf)]
+              (cleanup-orphaned-files-with-pre-pull
+               (assoc (api/iterate-apis conf apis capture-pre-pull-local-files) :delete-orphaned true)
+               apis))
+            (is (= [(.getCanonicalPath stale)] (map #(.getCanonicalPath ^java.io.File %) @orphans)))))))
+    (delete-target)))
+
+(deftest orphan-check-scaling-test
+  (testing "300 channels x 10 files: each script is named once, not once per following channel"
+    (let [target (build-path "target" "orphan-check-test")
+          apis [:channel-groups :channels]
+          n 300
+          ;; Still on disk but no longer on the server
+          deleted-channel (synthetic-channel-files target n)
+          local-files (map io/file (concat (map #(build-path target "Channels" (group-name %) "index.xml")
+                                                (range (quot n channels-per-group)))
+                                           (mapcat #(synthetic-channel-files target %) (range (inc n)))))
+          safe-name mf/safe-name
+          safe-name-calls (atom 0)
+          orphans (atom nil)]
+      (with-redefs [mhttp/fetch-all (serve (synthetic-server n))
+                    mf/safe-name (fn [name] (swap! safe-name-calls inc) (safe-name name))
+                    delete-orphaned-files (fn [conf files] (reset! orphans files) conf)]
+        (cleanup-orphaned-files-with-pre-pull
+         (assoc (api/iterate-apis {:target target :disk-mode "code"} apis api/preprocess-api)
+                :delete-orphaned true
+                :pre-pull-local-files local-files)
+         apis))
+      (is (= 10 (count @orphans)))
+      (is (= (canonical-paths deleted-channel) (canonical-paths @orphans)))
+      (is (< @safe-name-calls (* 2 (count local-files)))
+          "safe-name calls should grow linearly with the number of files"))))
+
+(deftest expand-filerefs-name-encoding-test
+  (let [dir (build-path "target" "test" "expand-filerefs")
+        main-file (io/file dir "Channel.xml")
+        script-dir (io/file dir "Channel")
+        expand (fn [fileref]
+                 (-> (clojure.data.xml/element :channel {}
+                                               (clojure.data.xml/element :script {:msync-fileref fileref}))
+                     clojure.zip/xml-zip
+                     (->> (expand-filerefs main-file))
+                     clojure.zip/node
+                     :content
+                     first
+                     :content
+                     first))]
+    (.mkdirs script-dir)
+    (try
+      (testing "reads the file written under the current encoded name"
+        (let [fileref (str (mf/safe-name "Set NTE.2.1 to \"TX\"") ".js")]
+          (spit (io/file script-dir fileref) "current();")
+          (is (= "current();" (expand fileref)))))
+
+      (testing "reads the old file the XML names when the new file also exists"
+        ;; after upgrading, a pull without -f keeps Channel.xml pointing at the old
+        ;; file but also writes the new one; edits to the old file must be pushed.
+        ;; long names were not shortened before, and unlike quotes they are valid on every OS
+        (let [long-name (apply str (repeat 245 "x"))
+              old-fileref (str long-name ".js")
+              new-fileref (str (mf/safe-name long-name) ".js")]
+          (is (not= old-fileref new-fileref))
+          (spit (io/file script-dir old-fileref) "edited();")
+          (spit (io/file script-dir new-fileref) "from-server();")
+          (is (= "edited();" (expand old-fileref)))
+          (is (= "from-server();" (expand new-fileref)))))
+
+      (testing "reads names that a second pass through safe-name would change"
+        (let [fileref (str (mf/safe-name (apply str (repeat 239 "y"))) ".js")]
+          (is (not= fileref (mf/safe-name fileref)))
+          (spit (io/file script-dir fileref) "edge();")
+          (is (= "edge();" (expand fileref)))))
+
+      (testing "rejects filerefs that leave the channel directory"
+        (is (thrown? AssertionError (expand "../escape.js"))))
+      (finally
+        (doseq [f (reverse (file-seq (io/file dir)))]
+          (.delete ^java.io.File f))))))

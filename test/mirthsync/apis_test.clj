@@ -1,14 +1,18 @@
 (ns mirthsync.apis-test
   (:require [clojure.data :as cd]
             [clojure.data.zip.xml :as cdzx]
+            [clojure.java.io :as io]
             [clojure.test :as ct]
             [clojure.zip :as cz]
             [mirthsync.apis :as ma]
+            [mirthsync.http-client :as mhttp]
+            [mirthsync.cli :as cli]
             [mirthsync.interfaces]
             [mirthsync.cross-platform-utils :as cpu]
             [mirthsync.files :as mf]
             [mirthsync.fixture-tools :refer [build-path]]
-            [mirthsync.xml :as mx]))
+            [mirthsync.xml :as mx]
+            [slingshot.slingshot :refer [throw+]]))
 
 (defn update-id [loc]
   (-> loc
@@ -195,7 +199,88 @@
     (ct/are [x y] (= x y)
       "foo.xml" (mf/safe-name "foo.xml")
       "%2Fpath chars in%2F%5C%5C%2F%5C%2F name.ext%2F" (mf/safe-name "/path chars in/\\\\/\\/ name.ext/")
-      "!@#$%^&*()_+-=[]{}||;:'\",<.>%2F?.xml" (mf/safe-name "!@#$%^&*()_+-=[]{}||;:'\",<.>/?.xml"))))
+      "!@#$%25^&%2A()_+-=[]{}%7C%7C;%3A'%22,%3C.%3E%2F%3F.xml" (mf/safe-name "!@#$%^&*()_+-=[]{}||;:'\",<.>/?.xml"))))
+
+(ct/deftest test-windows-safe-file-names
+  (ct/testing "Characters Windows rejects are percent encoded"
+    (ct/are [x y] (= x y)
+      "1-Accept message if %22msg['MSH']['MSH.6']%22 equals %2243308%22"
+      (mf/safe-name "1-Accept message if \"msg['MSH']['MSH.6']\" equals \"43308\"")
+
+      "MSH (out) %3C-- Message Header (MSH) (in)" (mf/safe-name "MSH (out) <-- Message Header (MSH) (in)")
+      "a%3Ab%2Ac%3Fd%7Ce%3Ef" (mf/safe-name "a:b*c?d|e>f")
+      "tab%09newline%0A" (mf/safe-name "tab\tnewline\n")
+      "trailing%2E%2E" (mf/safe-name "trailing..")
+      "trailing space%20" (mf/safe-name "trailing space ")
+      "inner. dots .stay" (mf/safe-name "inner. dots .stay")))
+
+  (ct/testing "Percent signs are encoded, so a name never shares a file with its encoded form"
+    (ct/are [x y] (= x y)
+      "50%25 off" (mf/safe-name "50% off")
+      "a%253Ab" (mf/safe-name "a%3Ab")
+      "AU%2558" (mf/safe-name "AU%58"))
+    (doseq [n ["Set NTE.2.1 to \"TX\"" "a:b*c?d|e>f" "a/b" "trailing.. " "AUX" "nul.backup" "NUL .txt"]]
+      (ct/is (not= (mf/safe-name n) (mf/safe-name (mf/safe-name n))) n)))
+
+  (ct/testing "Names with slashes keep the file names earlier versions wrote"
+    (ct/are [x y] (= x y)
+      "a%2Fb" (mf/safe-name "a/b")
+      "a%5Cb" (mf/safe-name "a\\b"))))
+
+(ct/deftest test-windows-reserved-file-names
+  (ct/testing "Reserved device names are encoded, with or without an extension, in any case"
+    (ct/are [x y] (= x y)
+      "CO%4E" (mf/safe-name "CON")
+      "PR%4E" (mf/safe-name "PRN")
+      "AU%58" (mf/safe-name "AUX")
+      "nu%6C" (mf/safe-name "nul")
+      "COM%31" (mf/safe-name "COM1")
+      "lpt%39" (mf/safe-name "lpt9")
+      "COM%30" (mf/safe-name "COM0")
+      "COM%B9" (mf/safe-name "COM¹")
+      "NU%4C.txt" (mf/safe-name "NUL.txt")
+      "Au%78.tar.gz" (mf/safe-name "Aux.tar.gz")))
+
+  (ct/testing "Spaces between a reserved name and its extension still count as reserved"
+    (ct/are [x y] (= x y)
+      "NU%4C .txt" (mf/safe-name "NUL .txt")
+      "au%78  .tar.gz" (mf/safe-name "aux  .tar.gz")
+      "COM%31 .log" (mf/safe-name "COM1 .log")
+      "CON%20" (mf/safe-name "CON ")))
+
+  (ct/testing "Names that only contain a reserved name are unchanged"
+    (ct/are [x] (= x (mf/safe-name x))
+      "CONSOLE"
+      "AUX Results"
+      "AUX Results .txt"
+      "COM10"
+      "LPT"
+      "MyNUL.txt"
+      "results.NUL")))
+
+(ct/deftest test-assert-file-name
+  (ct/testing "Single names pass through unchanged"
+    (ct/is (= "Step %22a%22.js" (mf/assert-file-name "Step %22a%22.js"))))
+  (ct/testing "Names that leave the directory are rejected"
+    (doseq [bad [".." "." "../x.js" "a/b.js" (str "a" java.io.File/separator "b.js")]]
+      (ct/is (thrown? AssertionError (mf/assert-file-name bad)) bad))))
+
+(ct/deftest test-long-file-names
+  (let [long-a (str (apply str (repeat 300 "a")) "-one")
+        long-b (str (apply str (repeat 300 "a")) "-two")]
+    (ct/testing "Names that fit are unchanged"
+      (ct/is (= (apply str (repeat 240 "a")) (mf/safe-name (apply str (repeat 240 "a"))))))
+
+    (ct/testing "Long names are shortened to at most 200 UTF-8 bytes and stay distinct"
+      (ct/is (>= 200 (count (.getBytes ^String (mf/safe-name long-a) "UTF-8"))))
+      (ct/is (re-matches #"a+-[0-9a-f]{8}" (mf/safe-name long-a)))
+      (ct/is (not= (mf/safe-name long-a) (mf/safe-name long-b)))
+      (ct/is (= (mf/safe-name long-a) (mf/safe-name long-a))))
+
+    (ct/testing "Multi-byte characters are never split"
+      (let [shortened (mf/safe-name (apply str (repeat 150 "é")))]
+        (ct/is (>= 200 (count (.getBytes ^String shortened "UTF-8"))))
+        (ct/is (re-matches #"é+-[0-9a-f]{8}" shortened))))))
 
 (ct/deftest test-correct-apis-for-conf
   (ct/testing "Apis function returns the correct apis depending on app-conf"
@@ -218,6 +303,12 @@
                :channels
                :alerts]
               (ma/apis {:disk-mode "groups" :include-configuration-map false})))))
+
+(defn- assert-deployment-xml
+  "Compare the complete XML tree, including any unexpected text around IDs."
+  [expected actual]
+  (ct/is (= (cz/node (mx/to-zip expected))
+            (cz/node (mx/to-zip actual)))))
 
 (ct/deftest bulk-deployment-tests
   (ct/testing "Deploy all channels function creates correct XML"
@@ -266,6 +357,206 @@
       ;; When push fails, should not collect channel ID and should return false
       (ct/is (= false (mirthsync.interfaces/after-push api (assoc app-conf :el-loc el-loc) result)))
       (ct/is (empty? @(:bulk-deploy-channels app-conf))))))
+
+(def ^:private changed-statuses-xml
+  "<list>
+     <dashboardStatus>
+       <channelId>positive-delta</channelId><name>Positive delta</name>
+       <deployedRevisionDelta>2</deployedRevisionDelta><codeTemplatesChanged>false</codeTemplatesChanged>
+     </dashboardStatus>
+     <dashboardStatus>
+       <channelId>unchanged</channelId><name>Unchanged</name>
+       <deployedRevisionDelta>0</deployedRevisionDelta><codeTemplatesChanged>false</codeTemplatesChanged>
+     </dashboardStatus>
+     <dashboardStatus>
+       <channelId>templates-only</channelId><name>Templates only</name>
+       <deployedRevisionDelta>0</deployedRevisionDelta><codeTemplatesChanged>true</codeTemplatesChanged>
+     </dashboardStatus>
+     <dashboardStatus>
+       <channelId>negative-delta</channelId><name>Negative delta</name>
+       <deployedRevisionDelta>-1</deployedRevisionDelta><codeTemplatesChanged>false</codeTemplatesChanged>
+     </dashboardStatus>
+     <dashboardStatus>
+       <channelId>both-changed</channelId><name>Both changed</name>
+       <deployedRevisionDelta>1</deployedRevisionDelta><codeTemplatesChanged>true</codeTemplatesChanged>
+     </dashboardStatus>
+   </list>")
+
+(defn- assert-deploy-changed-request
+  "Run the real deployment function with HTTP stubs and inspect its requests."
+  [app-conf statuses-xml expected-xml]
+  (let [calls (atom [])]
+    (with-redefs [mhttp/get-xml (fn [conf path]
+                                (swap! calls conj [:get conf path])
+                                statuses-xml)
+                  mhttp/post-xml (fn [conf path body params multipart?]
+                                  (swap! calls conj [:post conf path body params multipart?])
+                                  {:status 200 :body "<map/>"})]
+      (ma/deploy-changed-channels app-conf))
+    (ct/is (= [:get app-conf "/channels/statuses"] (first @calls)))
+    (ct/is (= (if expected-xml 2 1) (count @calls)))
+    (when expected-xml
+      (let [[method conf path body params multipart?] (second @calls)]
+        (ct/is (= [:post app-conf "/channels/_deploy" {:returnErrors "true" :debug "false"} false]
+                  [method conf path params multipart?]))
+        (assert-deployment-xml expected-xml body)))))
+
+(ct/deftest deploy-changed-channels-tests
+  (doseq [[templates-pushed expected-xml]
+          [[true "<set><string>positive-delta</string><string>templates-only</string><string>negative-delta</string><string>both-changed</string></set>"]
+           [false "<set><string>positive-delta</string><string>negative-delta</string><string>both-changed</string></set>"]
+           [nil "<set><string>positive-delta</string><string>negative-delta</string><string>both-changed</string></set>"]]]
+    (ct/testing (str "Revision changes always deploy; template changes require templates pushed: " templates-pushed)
+      (assert-deploy-changed-request {:code-templates-pushed templates-pushed}
+                                     changed-statuses-xml expected-xml)))
+
+  (doseq [templates-pushed [true false]
+          statuses-xml ["<list/>"
+                        "<list><dashboardStatus><channelId>unchanged</channelId><deployedRevisionDelta>0</deployedRevisionDelta><codeTemplatesChanged>false</codeTemplatesChanged></dashboardStatus></list>"]]
+    (ct/testing "No pending changes means no deploy request"
+      (assert-deploy-changed-request {:code-templates-pushed templates-pushed} statuses-xml nil)))
+
+  (doseq [delta-element ["" "<deployedRevisionDelta/>"
+                         "<deployedRevisionDelta>invalid</deployedRevisionDelta>"
+                         "<deployedRevisionDelta>2147483648</deployedRevisionDelta>"]
+          templates-pushed [true false]]
+    (ct/testing (str "Missing or invalid deltas still allow template-only changes: " delta-element)
+      (assert-deploy-changed-request
+       {:code-templates-pushed templates-pushed}
+       (str "<list><dashboardStatus><channelId>templates-only</channelId>"
+            delta-element
+            "<codeTemplatesChanged>true</codeTemplatesChanged></dashboardStatus></list>")
+       (when templates-pushed "<set><string>templates-only</string></set>")))))
+
+(ct/deftest deploy-new-channels-tests
+  (ct/testing "Changed and undeployed IDs are combined once in discovery order"
+    (let [pushed-ids (atom ["unchanged" "new-channel" "positive-delta" "new-channel"])]
+      (assert-deploy-changed-request
+       {:code-templates-pushed false :pushed-channel-ids pushed-ids}
+       changed-statuses-xml
+       "<set><string>positive-delta</string><string>negative-delta</string><string>both-changed</string><string>new-channel</string></set>")
+      (ct/is (= ["unchanged" "new-channel" "positive-delta" "new-channel"] @pushed-ids))))
+
+  (ct/testing "Every pushed channel is new when the dashboard is empty"
+    (assert-deploy-changed-request
+     {:pushed-channel-ids (atom ["new-channel" "another-new-channel" "new-channel"])}
+     "<list/>"
+     "<set><string>new-channel</string><string>another-new-channel</string></set>"))
+
+  (ct/testing "Already deployed and unchanged channels are not redeployed by deploy-new"
+    (assert-deploy-changed-request
+     {:pushed-channel-ids (atom ["unchanged"])}
+     "<list><dashboardStatus><channelId>unchanged</channelId><deployedRevisionDelta>0</deployedRevisionDelta></dashboardStatus></list>"
+     nil))
+
+  (ct/testing "Empty tracking does not request deployment"
+    (assert-deploy-changed-request {:pushed-channel-ids (atom [])} "<list/>" nil))
+
+  (ct/testing "Repeated dashboard entries are deployed only once"
+    (assert-deploy-changed-request
+     {}
+     "<list><dashboardStatus><channelId>changed</channelId><deployedRevisionDelta>1</deployedRevisionDelta></dashboardStatus><dashboardStatus><channelId>changed</channelId><deployedRevisionDelta>2</deployedRevisionDelta></dashboardStatus></list>"
+     "<set><string>changed</string></set>")))
+
+(ct/deftest deploy-changed-failure-tests
+  (doseq [failure-stage [:get :post]]
+    (ct/testing (str "HTTP failure at " failure-stage " returns false without retrying")
+      (let [calls (atom [])
+            app-conf {:pushed-channel-ids (atom ["new-channel"])}]
+        (with-redefs [mhttp/get-xml (fn [_ _]
+                                    (swap! calls conj :get)
+                                    (if (= :get failure-stage)
+                                      (throw+ {:status 500 :body "Status lookup failed"})
+                                      "<list/>"))
+                      mhttp/post-xml (fn [& _]
+                                      (swap! calls conj :post)
+                                      (throw+ {:status 500 :body "Deployment failed"}))]
+          (ct/is (false? (ma/deploy-changed-channels app-conf))))
+        (ct/is (= (if (= :get failure-stage) [:get] [:get :post]) @calls))
+        (ct/is (= ["new-channel"] @(:pushed-channel-ids app-conf))))))
+
+  (ct/testing "Malformed dashboard XML does not deploy pushed IDs as new channels"
+    (let [calls (atom [])]
+      (with-redefs [mhttp/get-xml (fn [_ _] "<list>")
+                    mhttp/post-xml (fn [& args] (swap! calls conj args))]
+        (ct/is (false? (ma/deploy-changed-channels {:pushed-channel-ids (atom ["new-channel"])}))))
+      (ct/is (empty? @calls)))))
+
+(ct/deftest deploy-changed-refresh-tests
+  (ct/testing "Each invocation rechecks dashboard state before deciding to deploy"
+    (let [calls (atom [])
+          deployed? (atom false)
+          app-conf {:pushed-channel-ids (atom ["new-channel"])}]
+      (with-redefs [mhttp/get-xml (fn [_ _]
+                                  (swap! calls conj :get)
+                                  (if @deployed?
+                                    "<list><dashboardStatus><channelId>new-channel</channelId><deployedRevisionDelta>0</deployedRevisionDelta></dashboardStatus></list>"
+                                    "<list/>"))
+                    mhttp/post-xml (fn [_ _ body _ _]
+                                    (swap! calls conj :post)
+                                    (assert-deployment-xml "<set><string>new-channel</string></set>" body)
+                                    (reset! deployed? true)
+                                    {:status 200 :body "<map/>"})]
+        (ma/deploy-changed-channels app-conf)
+        (ma/deploy-changed-channels app-conf))
+      (ct/is (= [:get :post :get] @calls)))))
+
+(ct/deftest deploy-new-tracking-tests
+  (ct/testing "Only successful saves are tracked, including repeated saves"
+    (let [pushed-ids (atom [])
+          el-loc (mx/to-zip "<channel><id>new-channel</id><name>New Channel</name></channel>")
+          app-conf {:pushed-channel-ids pushed-ids :el-loc el-loc}]
+      (doseq [result [{:status 200 :body "true"}
+                      {:status 200 :body "<boolean>true</boolean>"}
+                      {:status 200 :body "{\"boolean\":true}"}]]
+        (ct/is (true? (mirthsync.interfaces/after-push :channels app-conf result))))
+      (ct/is (= ["new-channel" "new-channel" "new-channel"] @pushed-ids))
+      (doseq [result [{:status 200 :body "false"} {:status 400 :body "error"}]]
+        (ct/is (false? (mirthsync.interfaces/after-push :channels app-conf result))))
+      (ct/is (= ["new-channel" "new-channel" "new-channel"] @pushed-ids))))
+
+  (ct/testing "Saving a channel without tracking still succeeds"
+    (let [app-conf {:el-loc (mx/to-zip "<channel><id>new-channel</id></channel>")}]
+      (ct/is (true? (mirthsync.interfaces/after-push :channels app-conf {:status 200 :body "true"})))
+      (ct/is (nil? (:pushed-channel-ids app-conf)))))
+
+  (ct/testing "Bulk deployment and new-channel tracking both receive successful saves"
+    (let [app-conf {:deploy-all true
+                    :bulk-deploy-channels (atom [])
+                    :pushed-channel-ids (atom [])
+                    :el-loc (mx/to-zip "<channel><id>new-channel</id></channel>")}]
+      (ct/is (true? (mirthsync.interfaces/after-push :channels app-conf {:status 200 :body "true"})))
+      (ct/is (= ["new-channel"] @(:bulk-deploy-channels app-conf)))
+      (ct/is (= ["new-channel"] @(:pushed-channel-ids app-conf))))))
+
+(ct/deftest forward-slash-restrict-to-path-pull-writes-file
+  ;; A restrict-to-path supplied with forward slashes must still match the
+  ;; OS-native file paths that serialize-node compares against via
+  ;; String/startsWith. config normalizes the separators; this drives the real
+  ;; serialize-node filter+write path end-to-end (no server) and asserts the
+  ;; file is written even when the path is given with forward slashes.
+  (let [target (build-path "target" "restrict-to-path-sep-test")
+        fpath (build-path target "Channels" "GroupA" "ChannelA.xml")
+        el-loc (mx/to-zip "<channel><id>id-1</id><name>ChannelA</name></channel>")
+        ;; restrict-to-path given with forward slashes
+        restrict-to-path (:restrict-to-path
+                          (cli/config ["-s" "https://localhost:8443/api"
+                                       "-u" "admin" "-p" "password"
+                                       "-t" target
+                                       "-r" "Channels/GroupA/ChannelA" "pull"]))
+        app-conf {:api :channels
+                  :el-loc el-loc
+                  :target target
+                  :restrict-to-path restrict-to-path
+                  :disk-mode "code"}]
+    (when (.exists (io/file target)) (cpu/delete-recursive target :allowed-dir "target"))
+    (with-redefs [mirthsync.interfaces/should-skip? (fn [_ _ _] false)
+                  mirthsync.interfaces/file-path (fn [_ _] fpath)
+                  mirthsync.interfaces/deconstruct-node (fn [_ _ _] [[fpath "<channel><id>id-1</id></channel>"]])]
+      (mx/serialize-node app-conf)
+      (ct/testing "Forward-slash restrict-to-path writes the channel file"
+        (ct/is (.exists (io/file fpath)))))
+    (when (.exists (io/file target)) (cpu/delete-recursive target :allowed-dir "target"))))
 
 (comment
   (ct/deftest iterate-apis
