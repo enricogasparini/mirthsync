@@ -19,10 +19,10 @@ RUN lein uberjar
 # Runtime stage - minimal Java image
 FROM eclipse-temurin:21-jre
 
-LABEL org.opencontainers.image.source="https://github.com/enricogasparini/mirthsync"
+LABEL org.opencontainers.image.source="https://github.com/james-cockayne/mirthsync"
 LABEL org.opencontainers.image.description="MirthSync - Mirth Connect configuration sync tool (with channel-id filtering)"
 LABEL org.opencontainers.image.licenses="EPL-1.0"
-LABEL org.opencontainers.image.version="3.5.2"
+LABEL org.opencontainers.image.version="3.9.0"
 
 # Create non-root user
 RUN groupadd -r mirthsync && useradd -r -g mirthsync mirthsync

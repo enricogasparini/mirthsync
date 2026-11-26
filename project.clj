@@ -1,4 +1,4 @@
-(defproject com.saga-it/mirthsync "3.5.2"
+(defproject com.saga-it/mirthsync "3.9.0"
   :description "MirthSync is an open source DevOps tool for Mirth Connect and
   Open Integration Engine version control and CI/CD automation. This command line
   tool enables healthcare integration DevOps workflows by keeping a local copy of
@@ -12,7 +12,7 @@
 
   The only requirements are having credentials for the server that is being synced
   and ensuring that the server is configured to allow access to its REST API."
-  :url "https://saga-it.com/blog/getting-started-with-mirthsync/"
+  :url "https://saga-it.com/products/mirthsync"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
   :min-lein-version "2.9.1"
