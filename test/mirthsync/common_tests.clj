@@ -151,7 +151,31 @@
                         "-i" "-f" "--include-configuration-map" "pull"))))
 
   (testing "Pull diff from baseline has only inconsequential differences (ordering, etc)"
-    (is (= "" (diff "--recursive" "--suppress-common-lines" "-I" ".*<contextType>.*" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*" "-I" ".*<lastStatsTime>.*" repo-dir baseline-dir))))
+    (is (= "" (diff "--recursive" "--suppress-common-lines" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*" "-I" ".*<lastStatsTime>.*" repo-dir baseline-dir))))
+
+  (testing "Single-channel pull and push preserve group membership and unrelated files"
+    (let [single-dir (str repo-dir "-channel-id")
+          channel-path (build-path "Channels" "This is a group" "Http Hello2 3081.xml")
+          id (mi/find-id :channels (mx/to-zip (slurp (io/file baseline-dir channel-path))))
+          run-channel (fn [target action & flags]
+                        (apply main-func
+                               (concat ["-s" "https://localhost:8443/api" "-u" "admin" "-p" "admin"
+                                        "-i" "-f" "-t" target "--channel-id" id] flags [action])))
+          all-local-files (filter #(.isFile ^java.io.File %) (file-seq (io/file repo-dir)))
+          unrelated (into {} (for [file all-local-files
+                                  :when (not (str/includes? (.getPath ^java.io.File file) "Http Hello2 3081"))]
+                              [file (slurp file)]))]
+      (try
+        (is (= 0 (run-channel single-dir "pull")))
+        (is (.exists (io/file single-dir channel-path)))
+        (is (not (.exists (io/file single-dir "Channels" "This is a group" "index.xml"))))
+        (is (= 1 (count (mi/api-files :channels (build-path single-dir "Channels")))))
+        (is (= 0 (run-channel single-dir "push")))
+        (is (= 0 (run-channel repo-dir "pull" "--delete-orphaned")))
+        (doseq [[file content] unrelated]
+          (is (= content (slurp file))))
+        (finally
+          (rm "-r" single-dir)))))
 
   (testing "Push back from pull dir succeeds without errors"
     (is (= 0 (main-func "--include-configuration-map" "-s" "https://localhost:8443/api"
@@ -164,7 +188,7 @@
                         "-i" "-f" "--include-configuration-map" "pull"))))
 
   (testing "Pull diff from baseline after multiple pushes has only inconsequential differences (ordering, etc)"
-    (is (= "" (diff "--recursive" "--exclude" ".DS_Store" "--suppress-common-lines" "-I" ".*<contextType>.*" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*" "-I" ".*<lastStatsTime>.*" repo-dir baseline-dir))))
+    (is (= "" (diff "--recursive" "--exclude" ".DS_Store" "--suppress-common-lines" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*" "-I" ".*<lastStatsTime>.*" repo-dir baseline-dir))))
 
   (testing "Code template push fails wth changes and --force not enabled."
     (is (= 1 (do
@@ -200,13 +224,7 @@
                  (main-func "-s" "https://localhost:8443/api"
                             "-u" "admin" "-p" "admin" "-t" repo-dir
                             "-i" "-m" "backup" "pull"))))
-      ;; NOTE: Skip backup mode diff test in CI environment due to environment-specific
-      ;; differences in alert ordering and content. The CI environment produces different
-      ;; alert configurations than the baseline, making this test unreliable across
-      ;; environments. The backup mode functionality is still tested via the push operation.
-      (if (System/getenv "GITHUB_ACTIONS")
-        (println "Skipping backup mode diff test in CI environment due to environment-specific differences")
-        (is (= "" (diff "--exclude" ".DS_Store" "--suppress-common-lines" "-I" ".*<contextType>.*" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*"  "-I" ".*<lastStatsTime>.*" (str repo-dir "/FullBackup.xml") (str baseline-dir "/../mirth-backup-" version ".xml")))))
+      (is (= "" (diff "--exclude" ".DS_Store" "--suppress-common-lines" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*"  "-I" ".*<lastStatsTime>.*" (str repo-dir "/FullBackup.xml") (str baseline-dir "/../mirth-backup-" version ".xml"))))
       (is (= 0 (do
                  (main-func "-s" "https://localhost:8443/api"
                             "-u" "admin" "-p" "admin" "-t" repo-dir
@@ -219,7 +237,7 @@
                  (main-func "-s" "https://localhost:8443/api"
                             "-u" "admin" "-p" "admin" "-t" repo-dir
                             "-i" "-m" "groups" "--include-configuration-map" "pull"))))
-      (is (= "" (diff "--exclude" ".DS_Store" "--recursive" "--suppress-common-lines" "-I" ".*<contextType>.*" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*" "-I" ".*<lastStatsTime>.*" repo-dir baseline-dir)))
+      (is (= "" (diff "--exclude" ".DS_Store" "--recursive" "--suppress-common-lines" "-I" ".*<time>.*" "-I" ".*<timezone>.*" "-I" ".*<revision>.*" "-I" ".*<lastStatsTime>.*" repo-dir baseline-dir)))
       (is (= 0 (do
                  (main-func "-s" "https://localhost:8443/api"
                             "-u" "admin" "-p" "admin" "-t" repo-dir

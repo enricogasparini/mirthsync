@@ -128,12 +128,22 @@
                         {:type :channel-empty :channel-id channel-id}))
 
         :else
-        ;; Wrap the single channel in a list element and return as a list of locs
-        [(-> (str "<list>" channel-xml "</list>")
-             mxml/to-zip
-             (cdzx/xml1-> :list :channel))]))
+        (let [loc (mxml/to-zip channel-xml)]
+          (when-not (and (= :channel (:tag (zip/node loc)))
+                         (= channel-id (cdzx/xml1-> loc :id cdzx/text)))
+            (throw (ex-info (str "Invalid response for channel with ID '" channel-id "'")
+                            {:type :channel-fetch-error :channel-id channel-id})))
+          [loc])))
     (catch clojure.lang.ExceptionInfo e
       (throw e))
     (catch Exception e
       (throw (ex-info (str "Error fetching channel with ID '" channel-id "': " (.getMessage e))
-                      {:type :channel-fetch-error :channel-id channel-id :cause e})))))
+                      {:type :channel-fetch-error :channel-id channel-id} e)))))
+
+(defn get-xml
+  "Authenticated GET to the given path, returns the response body string."
+  [{:keys [server ignore-cert-warnings]} path]
+  (-> (client/get (str server path)
+                  {:headers (build-headers)
+                   :insecure? ignore-cert-warnings})
+      :body))

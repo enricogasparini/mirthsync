@@ -70,6 +70,7 @@ mirthSync is a Clojure-based command-line tool for synchronizing Mirth Connect c
 - **Multimethods**: Used for dispatch based on entity types and operations
 - **XML Processing**: Extensive use of clojure.data.xml and zipper operations
 - **Orphan Detection**: Automatic detection of local files that no longer exist on remote server during pull operations
+- **Unordered Collection Sorting**: `mirthsync.xml/sort-unordered` sorts the children of elements Mirth backs with a HashSet/HashMap (allowlisted by tag path in `unordered-paths`) before a pull writes files. Only add paths for Set/Map fields, never for Lists, whose order is meaningful. The one exception is a List the server loads with no `ORDER BY` and restores item by item (`serverConfiguration/alerts`); prove it flaps first, e.g. by pushing in reverse file order. Elements serialized with an ordered XStream class (e.g. `class="linked-hash-map"`) are skipped even when their path matches. Map entries sort by key and integer sets numerically.
 - **Pre-pull State Capture**: Local files are captured before pull operations to enable accurate orphan detection
 
 ### Code Quality
@@ -99,7 +100,7 @@ mirthSync is a Clojure-based command-line tool for synchronizing Mirth Connect c
 - **Complex Conditional Logic**: In boolean filtering logic, add comments to clarify intent and review conditions for logical redundancy. Complex chains of `and`/`or` conditions can become hard to read and may contain unnecessary clauses.
 
 ### Dependencies
-- Requires Java JRE/JDK version 8 or higher
+- Requires Java JRE/JDK version 11 or higher (the bundled JGit 6.8 is built for Java 11)
 - Built with Leiningen
 - Key libraries: clj-http, clojure.data.xml, tools.cli, slingshot, clj-jgit
 

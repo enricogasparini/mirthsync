@@ -46,7 +46,7 @@ Install from the [VS Code Marketplace](https://marketplace.visualstudio.com/item
 
 ## Current version
 
-The latest version of mirthSync is "3.5.2". Note the changes below. Version 3 of
+The latest version of mirthSync is "3.9.0". Note the changes below. Version 3 of
 mirthSync changed the layout of the target directory structure. Javascript is
 extracted into separate files and top level channels are now placed in a default
 group directory.
@@ -56,22 +56,122 @@ group directory.
 - **Token-based Authentication**: New `--token` flag for authentication using existing HTTP session tokens (alternative to username/password)
 - **Simplified Git Operations**: Git commands no longer require server credentials or authentication flags
 - **Bulk Channel Deployment**: New `--deploy-all` flag for efficient bulk deployment of multiple channels
+- **Selective Deployment**: New `--deploy-changed` and `--deploy-new` flags deploy only channels with pending changes or new channels after a push
 - **Enhanced Orphaned File Detection**: Always detects orphaned files during pull operations with clear user warnings and optional automatic deletion
 - **Improved User Experience**: Better code organization and elimination of duplicate orphan detection logic
 - **Enhanced Git Integration**: Comprehensive subcommand support (init, status, add, commit, diff, log, branch, checkout, remote, pull, push, reset)
 - **Improved JGit API**: Better reliability and performance with fixed reflection warnings
 - **Security**: Path validation and safety features for file operations
 
+## Upgrading to 3.9.0
+
+Version 3.9.0 changes how item names map to file and directory names, so that a target directory works on Windows as well as on macOS and Linux.
+Item names are the names of channels, channel groups, code templates, code template libraries, alerts, and the transformer and filter steps that become `.js` files.
+
+- Control characters, `%` and `" * : < > ? |` are percent encoded, as `/` and `\` already were.
+  For example, `Accept message if "msg['MSH']" equals "X"` becomes `Accept message if %22msg['MSH']%22 equals %22X%22`, and `50% off` becomes `50%25 off`.
+  Because `%` is encoded too, a name no longer shares a file with the encoded form of another name.
+- Trailing dots and spaces are percent encoded, because Windows silently drops them.
+- Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `COM¹`-`COM³`, `LPT0`-`LPT9` and `LPT¹`-`LPT³`, in any case, with or without an extension, and with or without spaces before the extension) have their last character percent encoded.
+  For example, `AUX` becomes `AU%58` and `NUL .txt` becomes `NU%4C .txt`.
+- Names longer than 240 UTF-8 bytes are cut to 200 bytes and end with `-` plus an 8-character hash of the full name.
+
+Names without these characters are unchanged.
+
+### What changes after upgrading
+
+- The next pull writes affected items under their new names.
+  Files with the old names stay in place and are reported as orphans.
+- Those old files may hold local edits that were never pushed.
+  `--delete-orphaned` deletes them, so push any local changes before upgrading.
+- A pull without `-f` keeps your existing XML files.
+  For an item whose own name did not change, its XML still names the old script files, and push keeps reading the files the XML names, so edits to the old files are still pushed.
+- If the name of a channel, channel group, code template, library or alert itself changed, a pull without `-f` writes a second XML file for the same item next to the old one.
+  Push would then upload both, and the one pushed last wins, so local edits can be overwritten by the server's copy.
+  Resolve this with the suggested steps below before pushing.
+- A `--restrict-to-path` value that names an affected item no longer names it, because its directory and file names changed.
+  A value that names no item matches every item whose path starts with it, so an old value can match nothing or a different item.
+  For example, `-r "Channels/G/AUX"` can take a channel named `AUX Results` instead of `AU%58`.
+  mirthsync warns when a value matches nothing, but not when it matches a different item.
+
+### Suggested steps
+
+1. Push any local changes with your current version.
+2. Have everyone who works on the same target directory upgrade together.
+3. Run `pull -f --delete-orphaned` once, without `-r`, `--skip-disabled`, or `--channel-id`, review the result, and commit it.
+   A plain `pull -f` writes the new files but leaves the old ones in place.
+   Without `-f`, existing XML files are kept, so a renamed item gets a second XML file and the next push uploads both.
+   With `-r` or `--skip-disabled`, the orphan cleanup still deletes the old files of the items the pull skipped, but does not write their new ones.
+   With `--channel-id`, only the selected channel is migrated; run an unfiltered pull to migrate the whole target directory.
+4. Update any `-r`/`--restrict-to-path` values in scripts and CI jobs to the new names.
+   In a `.bat` or `.cmd` file, cmd treats `%` specially: write each `%` as `%%`, for example `-r "Channels/G/AU%%58"`, or as `%%%%` when the command is run with `call`, as the npm `mirthsync` command must be from a batch file.
+   Otherwise cmd reads `%5` as the fifth argument to the batch file.
+   PowerShell and other shells need no change.
+
+### Things to know
+
+- Paths inside a target directory can exceed 260 characters.
+  On Windows, Java handles long paths, but Git needs `git config core.longpaths true`.
+
 ## Changes
 
-### 3.6.0
+### Fork additions
 
 - **Channel ID Filtering**: New `--channel-id` flag to scope push/pull operations to a single channel
   - Accepts a valid UUID (e.g., `1b82a0e4-f80c-44b7-8147-43e1f1239fb6`)
   - Fetches only the specified channel from the server instead of all channels
   - Automatically includes channel-groups preprocessing for correct group/path resolution
   - Works with both push and pull operations
+  - Supports `code` and `items` disk modes; `groups` and `backup` are rejected because they combine channels
   - UUID format validated on input with clear error messages
+  - Scoped orphan cleanup preserves other channels and group indexes, and scoped deployment never deploys unrelated channels
+- **Bulk deployment payload**: Emit the channel ID set as XML, including when deploying a single selected channel with `--deploy-all`.
+- **Container distribution**: Multi-stage Java 21 Docker image with a non-root runtime and `/data` volume. The GHCR workflow publishes `latest` and commit-specific `master-<sha>` tags, without a redundant `master` tag. Pull requests build without publishing.
+- **Manual Clojure CI**: Run the Clojure test/build workflow using `workflow_dispatch`.
+
+### 3.9.0
+
+This release changes the names of some files in a target directory. Read [Upgrading to 3.9.0](#upgrading-to-390) before you upgrade.
+
+- **Windows-safe file names** (PR #101, thanks @dbelinsky-accureference): item names are now encoded so that a target directory works on Windows as well as on macOS and Linux. Names without the characters below are unchanged.
+  - Control characters, `%` and `" * : < > ? |` are percent encoded, as `/` and `\` already were. Trailing dots and spaces are encoded too.
+  - Windows reserved names such as `AUX`, `CON` and `NUL.txt` have their last character encoded, for example `AU%58`.
+  - Names longer than 240 bytes are shortened and end in a short hash. A pull no longer stops with "File name too long" on a long transformer or filter step name.
+  - Push reads each script from the file name stored in the item's XML, so a target directory pulled by an earlier version can still be pushed before you convert it.
+- **`--restrict-to-path` takes only the item it names** (PR #102): `-r "Channels/G/ADT"` no longer also takes `ADT Inbound`, and a group or library path no longer takes another group or library whose name starts the same way. A path that names no item keeps the prefix match, so a partial name still selects every item that starts with it.
+- **A warning when `--restrict-to-path` matches nothing** (PR #103): a push or pull whose `-r` matched no item finished without saying so. It now logs a warning. The exit code does not change.
+
+### 3.8.1
+
+- **Faster orphan detection on pull** (PR #97, thanks @dave-InTheCloud): after a pull, the orphan check walked the rest of the server response once for every item, so its run time grew with the square of the channel count. It now runs in linear time. On a server with about 300 channels, a pull dropped from about 9 minutes to about 20 seconds.
+  - The old check also expected files that did not exist, which hid some stale `.js` files. Pulls may now report orphaned script files that they missed before, and `--delete-orphaned` will delete them. Add `--interactive` to confirm each deletion.
+- **`--deploy-all` failures fail the command**: a failed bulk deployment was logged but still exited 0, and `--auto-commit` still committed. It now exits 1 and skips the automatic Git commit, as `--deploy-changed` does.
+- **Java 11 is required**: mirthSync has needed Java 11 or newer since 3.5.1, the first stable release with Git integration, because the bundled JGit 6.8 is built for Java 11. The README, the npm package README and the npm launcher's install hint said Java 8 and now say Java 11. Nothing changes at run time.
+- **Removed `mirthsync.actions/capture-expected-paths`** (PR #98): this unused function is gone. It only matters if you call mirthSync as a library from the Clojars jar.
+
+### 3.8.0
+
+- **Stable ordering for unordered collections** (issue #66, thanks @daniel-ls-howard): a pull now sorts the collections that Mirth stores in no fixed order, so pulling unchanged code no longer shows them reordered in version control. This covers code template context types, library enabled/disabled channel IDs, channel dependency and tag IDs, connector plugin properties, alert channels and error event types, the configuration map, global scripts, and the set-backed parts of a backup-mode server configuration, including its alert list, whose order depends on the order the alerts were created in. Lists whose order matters, such as destination connectors and transformer steps, are left untouched, and no values are changed. Pushes are unaffected because the server stores these as unordered sets and maps.
+  - Expect a one-time commit that only reorders these elements the first time you pull over your existing files with `-f` after upgrading. Without `-f`, a pull does not overwrite existing files.
+  - Use `--no-sort-unordered` to keep the server's order.
+- **Smaller release archives**: the `.tar.gz` and `.zip` no longer bundle a leftover npm jar from a previous release, which roughly doubled their size.
+
+### 3.7.1
+
+- **Registry metadata** (PR #91, thanks @morgan-saga): the Clojars project `:url` and the npm `homepage` now point at the mirthSync product page, https://saga-it.com/products/mirthsync, instead of a redirecting blog URL and the GitHub repo. No code changes.
+
+### 3.7.0
+
+- **Selective deployment** (PR #78, thanks @gibson9583): new `--deploy-changed` flag deploys only channels that Mirth reports as changed after a push (non-zero `deployedRevisionDelta`, or `codeTemplatesChanged` when this push saved code templates). Pair it with `--deploy-new` to also deploy pushed channels that are not currently deployed. Errors while checking or deploying return a nonzero exit code and skip the automatic Git commit.
+  - Mirth only tracks template changes for FUNCTION and COMPILED_CODE templates; drag-and-drop templates never trigger a deployment.
+  - Deploy flags have no effect with `--disk-mode backup`, because a configuration restore leaves every channel undeployed.
+
+### 3.6.0
+
+- **`--version` flag**: New `-V`/`--version` flag prints the installed mirthsync version and exits (no server/credentials required).
+- **Windows `--restrict-to-path` with spaces and forward slashes** (issues #82, #83): the npm launcher no longer word-splits arguments through a shell, and restrict paths supplied with forward slashes are normalized to the platform separator — so scoping a pull/push to a single channel or group (e.g. `-r "Channels/Default Group/Sample Channel"`) now works on Windows. Pulling a single channel with `-r Channels/<group>/<channel>` writes the channel file as expected.
+- **Launcher quoting**: `mirthsync.sh`/`mirthsync.bat` quote the jar path and arguments so install paths or arguments containing spaces are handled correctly.
+- **Windows `--delete-orphaned` fix**: orphan detection no longer captures unmanaged files (e.g. `.git`) under the target root on Windows, preventing accidental deletion.
 
 ### 3.5.2
 
@@ -221,7 +321,7 @@ For detailed installation guides and integration with your specific CI/CD platfo
 
 ## Prerequisites
 
-Requires Java JRE or JDK version 8 or higher (Java 8, 11, 17, 21, and other LTS versions are supported)
+Requires Java JRE or JDK version 11 or higher (Java 11, 17, 21, and other LTS versions are supported)
 
 ## For MacOS users
 To be able to run the script on MacOS, you need to install the following tools:
@@ -276,8 +376,10 @@ Options:
         path may refer to a filename specifically or a directory. If the path
         refers to a file - only that file will be pushed. If the path refers to
         a directory - the push will be limited to resources contained within
-        that directory. The RESTRICT_TO_PATH must be specified relative to
-        the target directory.
+        that directory. A channel may be named without its extension. If the
+        path names no file or directory exactly, it is used as a prefix and
+        takes every path that starts with it. The RESTRICT_TO_PATH must be
+        specified relative to the target directory.
       --include-configuration-map                       A boolean flag to include the
         configuration map in a push or pull. Default: false
       --skip-disabled                                   A boolean flag that indicates whether
@@ -292,7 +394,15 @@ Options:
         in a single bulk operation after all channels are saved.
         Allows Mirth's dependency logic to control deployment order.
         More efficient than individual deployment for multiple channels.
-  -I, --interactive                                    
+      --deploy-changed                                 Deploy only changed channels after push
+        After all channels are saved, query the server for channel statuses
+        and deploy only those with a non-zero deployedRevisionDelta or
+        where codeTemplatesChanged is true and this push saved code templates.
+      --deploy-new                                     Deploy channels that are not currently deployed
+        Use with --deploy-changed. During push, tracks which channels were
+        saved. After push, any saved channel not found in the dashboard
+        statuses (i.e. not currently deployed) will also be deployed.
+  -I, --interactive
         Allow for console prompts for user input
       --commit-message MESSAGE             mirthsync commit  Commit message for git operations
       --git-author NAME                    <computed>        Git author name for commits
@@ -303,6 +413,13 @@ Options:
         When pulling from remote, compare local files with remote files and
         delete any local files that no longer exist on the remote server.
         Use with --interactive to confirm deletions before they occur.
+      --[no-]sort-unordered                                  Sort unordered collections during a pull.
+        Mirth stores some collections (code template context types,
+        library and alert channel IDs, the configuration map, etc.) in
+        no fixed order, which creates noisy diffs between pulls. These
+        are sorted by default; use --no-sort-unordered to write them
+        in the order the server returns them.
+  -V, --version                                              Print version and exit
   -h, --help
 
 Actions:
@@ -408,6 +525,20 @@ $ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u 
 $ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u admin -p admin --deploy-all push -t ./mirth-config -r "Channels/Production Group"
 ```
 
+**Selective deployment (deploy only changed channels):**
+``` shell
+# Deploy only channels that have pending changes (non-zero revision delta or code template changes)
+$ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u admin -p admin --deploy-changed push -t ./mirth-config
+
+# Deploy changed channels AND any newly pushed channels that aren't currently deployed
+$ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u admin -p admin --deploy-changed --deploy-new push -t ./mirth-config
+```
+
+Template-only changes trigger deployment only when this push successfully saves
+code templates, template libraries, or a backup with a template section.
+Errors while checking or deploying changed channels return a nonzero exit code
+and skip automatic Git commits.
+
 **Performance comparison:**
 - `--deploy`: Each channel is deployed immediately after being saved (N API calls for N channels)
 - `--deploy-all`: All channels are collected during push, then deployed in a single bulk operation (1 API call for all channels)
@@ -441,6 +572,9 @@ $ java -jar mirthsync-<version>-standalone.jar -s https://localhost:8443/api -u 
 - All other API resources (code templates, global scripts, alerts, etc.) are skipped
 - Channel groups are preprocessed but not written to disk, ensuring the channel is placed in the correct group directory
 - The channel ID must be a valid UUID format (e.g., `1b82a0e4-f80c-44b7-8147-43e1f1239fb6`)
+- Use the default `code` disk mode or `--disk-mode items`. The `groups` and `backup` modes combine channels and cannot be used with `--channel-id`.
+- Push leaves channel group definitions unchanged. With `--deploy-changed`, only the selected channel can be deployed.
+- Orphan detection and `--delete-orphaned` only consider local files belonging to the selected channel; other channels and group indexes are left untouched.
 
 ### Orphaned File Management
 
@@ -796,6 +930,16 @@ Requires [Leiningen](https://leiningen.org/)
 ## Todo
 
 - Gracefully handle renames and deletions
+
+## About & Commercial Support
+
+mirthSync is built and maintained by [Saga IT, LLC](https://saga-it.com), a
+healthcare integration consultancy. If you need help beyond the tool:
+
+- [Mirth Connect consulting & development](https://saga-it.com/services/mirth-connect): channel development, AWS/Azure HA clustering, and commercial-license migration
+- [Open Integration Engine (OIE) services](https://saga-it.com/services/open-integration-engine)
+- [Getting started with mirthSync](https://saga-it.com/blog/getting-started-with-mirthsync): step-by-step CLI walkthrough
+- [MirthSync for VS Code](https://saga-it.com/products/mirthsync-vscode): the companion GUI extension
 
 ## License
 
